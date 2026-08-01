@@ -1,0 +1,40 @@
+package vars
+
+type MysqlSettingS struct {
+	Driver          string // 使用的数据库驱动，支持 mysql、postgres
+	Host            string
+	Port            string
+	User            string
+	Password        string
+	PrivateUser     string // 私有数据库用户名
+	PrivatePassword string // 私有数据库密码
+	Db              string
+	AdminDb         string // 管理后台数据库
+	Schema          string // postgres 专用
+}
+
+type RedisSettingS struct {
+	Host     string
+	Port     string
+	Password string
+	Db       int
+}
+
+type QdrantSettingS struct {
+	Host   string
+	Port   int
+	ApiKey string
+}
+
+type RabbitmqSettingS struct {
+	Host     string
+	Port     string
+	User     string
+	Password string
+	Vhost    string
+}
+
+var MysqlSettings = &MysqlSettingS{}
+var RedisSettings = &RedisSettingS{}
+var QdrantSettings = &QdrantSettingS{}
+var RabbitmqSettings = &RabbitmqSettingS{}

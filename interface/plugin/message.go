@@ -1,0 +1,60 @@
+package plugin
+
+import (
+	"context"
+	"io"
+	"mime/multipart"
+
+	"github.com/openai/openai-go/v3"
+
+	"github.com/xiaoguiwucan/openchat-wx/dto"
+	"github.com/xiaoguiwucan/openchat-wx/interface/settings"
+	"github.com/xiaoguiwucan/openchat-wx/model"
+	"github.com/xiaoguiwucan/openchat-wx/pkg/robot"
+)
+
+type MessageServiceIface interface {
+	SendTextMessage(toWxID, content string, at ...string) error
+	SendLongTextMessage(toWxID string, longText string) error
+	SendAppMessage(toWxID string, appMsgType int, appMsgXml string) error
+	MsgUploadImg(toWxID string, image io.Reader) (*model.Message, error)
+	SendImageMessageByLocalPath(toWxID string, imagePath string) error
+	SendImageMessageByRemoteURL(toWxID string, imageURL string) error
+	SendVideoMessageByLocalPath(toWxID string, videoPath string) error
+	SendVideoMessageByRemoteURL(toWxID string, videoURL string) error
+	SendVoiceMessageByLocalPath(toWxID string, voicePath string) error
+	SendFileMessageByLocalPath(toWxID string, localFilePath string) error
+	SendImageMessageStream(ctx context.Context, req dto.SendImageMessageRequest, file io.Reader, fileHeader *multipart.FileHeader) (*model.Message, error)
+	SendFileMessage(ctx context.Context, req dto.SendFileMessageRequest, file io.Reader, fileHeader *multipart.FileHeader) error
+	MsgSendVoice(toWxID string, voice io.Reader, voiceExt string) error
+	MsgSendVideo(toWxID string, video io.Reader, videoExt string) error
+	SendMusicMessage(toWxID string, songTitle string) error
+	ShareLink(toWxID string, shareLinkInfo robot.ShareLinkMessage) error
+	ResetChatRoomAIMessageContext(message *model.Message) error
+	GetAIMessageContext(message *model.Message) ([]openai.ChatCompletionMessageParamUnion, error)
+	SetMessageIsInContext(message *model.Message) error
+	XmlDecoder(content string) (robot.XmlMessage, error)
+	UpdateMessage(message *model.Message) error
+	ChatRoomAIDisabled(chatRoomID string) error
+	GetChatRoomMember(chatRoomID string, wechatID string) (*model.ChatRoomMember, error)
+	ToolsCompleted(toWxID, replyWxID string) error
+}
+
+type MessageContext struct {
+	Context        context.Context
+	Settings       settings.Settings
+	Message        *model.Message
+	MessageContent string
+	Pat            bool
+	ReferMessage   *model.Message
+	MessageService MessageServiceIface
+}
+
+type MessageHandler interface {
+	GetName() string
+	GetLabels() []string
+	Match(ctx *MessageContext) bool
+	PreAction(ctx *MessageContext) bool
+	PostAction(ctx *MessageContext)
+	Run(ctx *MessageContext)
+}

@@ -1,0 +1,141 @@
+package startup
+
+import (
+	"fmt"
+	"log"
+	"github.com/xiaoguiwucan/openchat-wx/model"
+	"github.com/xiaoguiwucan/openchat-wx/vars"
+
+	"gorm.io/gorm"
+)
+
+type migrateTask struct {
+	name   string
+	db     func() *gorm.DB
+	models []any
+}
+
+func autoMigrateTasks() []migrateTask {
+	return []migrateTask{
+		{
+			name: "robot",
+			db: func() *gorm.DB {
+				return vars.DB
+			},
+			models: []any{
+				&model.SystemSettings{},
+				&model.GlobalSettings{},
+				&model.ChatRoomSettings{},
+				&model.ChatRoomMember{},
+				&model.FriendSettings{},
+				&model.KnowledgeDocument{},
+				&model.ImageKnowledgeDocument{},
+				&model.KnowledgeCategory{},
+				&model.Memory{},
+				&model.MemoryExtractionState{},
+				&model.MemberProfile{},
+				&model.MemberRelationship{},
+				&model.OSSSettings{},
+				&model.MomentSettings{},
+				&model.Skill{},
+				&model.SystemPrompt{},
+				&model.Contact{},
+			},
+		},
+	}
+}
+
+type enumMigration struct {
+	table  string
+	column string
+	sql    string
+}
+
+func enumMigrations() []enumMigration {
+	return []enumMigration{
+		{
+			table:  "oss_settings",
+			column: "oss_provider",
+			sql:    "ALTER TABLE oss_settings MODIFY COLUMN oss_provider ENUM('aliyun','tencent_cloud','cloudflare','volcengine') NOT NULL DEFAULT 'aliyun' COMMENT '对象存储服务商'",
+		},
+		{
+			table:  "oss_settings",
+			column: "auto_upload_image_mode",
+			sql:    "ALTER TABLE oss_settings MODIFY COLUMN auto_upload_image_mode ENUM('all','ai_only') NOT NULL DEFAULT 'ai_only' COMMENT '自动上传图片模式'",
+		},
+		{
+			table:  "oss_settings",
+			column: "auto_upload_video_mode",
+			sql:    "ALTER TABLE oss_settings MODIFY COLUMN auto_upload_video_mode ENUM('all','ai_only') NOT NULL DEFAULT 'ai_only' COMMENT '自动上传视频模式'",
+		},
+		{
+			table:  "oss_settings",
+			column: "auto_upload_file_mode",
+			sql:    "ALTER TABLE oss_settings MODIFY COLUMN auto_upload_file_mode ENUM('all','ai_only') NOT NULL DEFAULT 'ai_only' COMMENT '自动上传文件模式'",
+		},
+		{
+			table:  "global_settings",
+			column: "chat_room_summary_mode",
+			sql:    "ALTER TABLE global_settings MODIFY COLUMN chat_room_summary_mode ENUM('text','image') NOT NULL DEFAULT 'text' COMMENT '群聊总结模式：text-文本，image-图片'",
+		},
+		{
+			table:  "chat_room_settings",
+			column: "chat_room_summary_mode",
+			sql:    "ALTER TABLE chat_room_settings MODIFY COLUMN chat_room_summary_mode ENUM('text','image') NULL COMMENT '群聊总结模式：text-文本，image-图片'",
+		},
+		{
+			table:  "chat_room_settings",
+			column: "news_type",
+			sql:    "ALTER TABLE chat_room_settings MODIFY COLUMN news_type ENUM('','text','image') NULL COMMENT '每日早报类型：text-文本，image-图片'",
+		},
+		{
+			table:  "system_settings",
+			column: "notification_type",
+			sql:    "ALTER TABLE system_settings MODIFY COLUMN notification_type ENUM('push_plus','email','wecom') NOT NULL DEFAULT 'push_plus' COMMENT '通知方式：push_plus-推送加，email-邮件，wecom-企业微信应用'",
+		},
+		{
+			table:  "contacts",
+			column: "type",
+			sql:    "ALTER TABLE contacts MODIFY COLUMN type ENUM('friend','chat_room','official_account') NOT NULL COMMENT '联系人类型：friend-好友，chat_room-群组，official_account-公众号'",
+		},
+	}
+}
+
+func migrateEnumColumns(db *gorm.DB) error {
+	for _, m := range enumMigrations() {
+		// 仅当表存在时才执行
+		if !db.Migrator().HasTable(m.table) {
+			continue
+		}
+		if err := db.Exec(m.sql).Error; err != nil {
+			return fmt.Errorf("枚举迁移失败 [%s.%s]: %w", m.table, m.column, err)
+		}
+		log.Printf("[enum migrate] %s.%s 迁移完成", m.table, m.column)
+	}
+	return nil
+}
+
+func AutoMigrate() error {
+	for _, task := range autoMigrateTasks() {
+		if len(task.models) == 0 {
+			continue
+		}
+
+		db := task.db()
+		if db == nil {
+			return fmt.Errorf("%s 数据库未初始化", task.name)
+		}
+
+		if err := db.AutoMigrate(task.models...); err != nil {
+			return fmt.Errorf("%s 数据库自动迁移失败: %w", task.name, err)
+		}
+
+		log.Printf("[%s] 自动迁移完成，当前表数量: %d", task.name, len(task.models))
+
+		if err := migrateEnumColumns(db); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}

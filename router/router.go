@@ -1,0 +1,253 @@
+package router
+
+import (
+	"github.com/gin-gonic/gin"
+
+	"github.com/xiaoguiwucan/openchat-wx/controller"
+	"github.com/xiaoguiwucan/openchat-wx/middleware"
+)
+
+var chatHistoryCtl *controller.ChatHistory
+var attachDownloadCtl *controller.AttachDownload
+var chatRoomCtl *controller.ChatRoom
+var contactCtl *controller.Contact
+var loginCtl *controller.Login
+var messageCtl *controller.Message
+var systemMessageCtl *controller.SystemMessage
+var globalSettingsCtl *controller.GlobalSettings
+var friendSettingsCtl *controller.FriendSettings
+var chatRoomSettingsCtl *controller.ChatRoomSettings
+var wechatServerCallbackCtl *controller.WechatServerCallback
+var aiCallbackCtl *controller.AICallback
+var momentsCtl *controller.Moments
+var systemSettingsCtl *controller.SystemSettings
+var ossSettingsCtl *controller.OSSSettings
+var mcpServerCtl *controller.MCPServer
+var probeCtl *controller.Probe
+var pprofProxyCtl *controller.PprofProxy
+var skillCtl *controller.SkillController
+var knowledgeCtl *controller.Knowledge
+var knowledgeCategoryCtl *controller.KnowledgeCategory
+var systemPromptCtl *controller.SystemPrompt
+var officialAccountCtx *controller.OfficialAccount
+var wxAppCtl *controller.WXApp
+
+func initController() {
+	chatHistoryCtl = controller.NewChatHistoryController()
+	attachDownloadCtl = controller.NewAttachDownloadController()
+	chatRoomCtl = controller.NewChatRoomController()
+	contactCtl = controller.NewContactController()
+	loginCtl = controller.NewLoginController()
+	messageCtl = controller.NewMessageController()
+	systemMessageCtl = controller.NewSystemMessageController()
+	globalSettingsCtl = controller.NewGlobalSettingsController()
+	friendSettingsCtl = controller.NewFriendSettingsController()
+	chatRoomSettingsCtl = controller.NewChatRoomSettingsController()
+	wechatServerCallbackCtl = controller.NewWechatServerCallbackController()
+	aiCallbackCtl = controller.NewAICallbackController()
+	momentsCtl = controller.NewMomentsController()
+	systemSettingsCtl = controller.NewSystemSettingsController()
+	ossSettingsCtl = controller.NewOSSSettingsController()
+	mcpServerCtl = controller.NewMCPController()
+	pprofProxyCtl = controller.NewPprofProxyController()
+	probeCtl = controller.NewProbeController()
+	skillCtl = controller.NewSkillController()
+	knowledgeCtl = controller.NewKnowledgeController()
+	knowledgeCategoryCtl = controller.NewKnowledgeCategoryController()
+	systemPromptCtl = controller.NewSystemPromptController()
+	officialAccountCtx = controller.NewOfficialAccountController()
+	wxAppCtl = controller.NewWXAppController()
+}
+
+func RegisterRouter(r *gin.Engine) error {
+	r.Use(middleware.ErrorRecover)
+
+	initController()
+
+	// 设置信任的内网 IP 范围
+	err := r.SetTrustedProxies([]string{
+		"10.0.0.0/8",
+		"172.16.0.0/12",
+		"192.168.0.0/16",
+	})
+	if err != nil {
+		return err
+	}
+
+	api := r.Group("/api/v1")
+	api.POST("/probe", probeCtl.Probe)
+
+	// 登录相关接口
+	api.GET("/robot/is-running", loginCtl.IsRunning)
+	api.GET("/robot/is-loggedin", loginCtl.IsLoggedIn)
+	api.GET("/robot/get-cached-info", loginCtl.GetCachedInfo)
+	api.POST("/robot/import-login-data", loginCtl.ImportLoginData)
+	api.POST("/robot/login", loginCtl.Login)
+	api.POST("/robot/login/check", loginCtl.LoginCheck)
+	api.POST("/robot/login/2fa", loginCtl.LoginYPayVerificationcode)
+	api.POST("/robot/login/data62", loginCtl.LoginData62Login)
+	api.POST("/robot/login/data62-sms-again", loginCtl.LoginData62SMSAgain)
+	api.POST("/robot/login/data62-sms-verify", loginCtl.LoginData62SMSVerify)
+	api.POST("/robot/login/a16", loginCtl.LoginA16Data)
+	api.POST("/robot/login/set-proxy", loginCtl.SetProxy)
+	api.DELETE("/robot/logout", loginCtl.Logout)
+
+	// 联系人相关接口
+	api.GET("/robot/contacts", contactCtl.GetContacts)
+	api.POST("/robot/contact/friend/search", contactCtl.FriendSearch)
+	api.POST("/robot/contact/friend/add", contactCtl.FriendSendRequest)
+	api.POST("/robot/contact/friend/add-from-chat-room", contactCtl.FriendSendRequestFromChatRoom)
+	api.POST("/robot/contact/friend/remark", contactCtl.FriendSetRemarks)
+	api.POST("/robot/contact/friend/pass-verify", contactCtl.FriendPassVerify)
+	api.POST("/robot/contacts/sync", contactCtl.SyncContact)
+	api.DELETE("/robot/contact/friend", contactCtl.FriendDelete)
+
+	// 群聊相关接口
+	api.POST("/robot/chat-room/members/sync", chatRoomCtl.SyncChatRoomMember)
+	api.GET("/robot/chat-room/members", chatRoomCtl.GetChatRoomMembers)
+	api.GET("/robot/chat-room/member", chatRoomCtl.GetChatRoomMember)
+	api.GET("/robot/chat-room/not-left-members", chatRoomCtl.GetNotLeftMembers)
+	api.POST("/robot/chat-room/member", chatRoomCtl.UpdateChatRoomMember)
+	api.POST("/robot/chat-room/create", chatRoomCtl.CreateChatRoom)
+	api.POST("/robot/chat-room/invite", chatRoomCtl.InviteChatRoomMember)
+	api.POST("/robot/chat-room/join", chatRoomCtl.GroupConsentToJoin)
+	api.POST("/robot/chat-room/name", chatRoomCtl.GroupSetChatRoomName)
+	api.POST("/robot/chat-room/remark", chatRoomCtl.GroupSetChatRoomRemarks)
+	api.POST("/robot/chat-room/announcement", chatRoomCtl.GroupSetChatRoomAnnouncement)
+	api.DELETE("/robot/chat-room/members", chatRoomCtl.GroupDelChatRoomMember)
+	api.DELETE("/robot/chat-room/quit", chatRoomCtl.GroupQuit)
+
+	// 消息相关接口
+	api.POST("/robot/message/revoke", messageCtl.MessageRevoke)
+	api.POST("/robot/message/send/text", messageCtl.SendTextMessage)
+	api.POST("/robot/message/send/longtext", messageCtl.SendLongTextMessage)
+	api.POST("/robot/message/send/masssend", messageCtl.SendGroupMassMsgText)
+	api.POST("/robot/message/send/image", messageCtl.SendImageMessage)
+	api.POST("/robot/message/send/image/stream", messageCtl.SendImageMessageStream)
+	api.POST("/robot/message/send/image/url", messageCtl.SendImageMessageByRemoteURL)
+	api.POST("/robot/message/send/image/local", messageCtl.SendImageMessageByLocalPath)
+	api.POST("/robot/message/send/video", messageCtl.SendVideoMessage)
+	api.POST("/robot/message/send/video/url", messageCtl.SendVideoMessageByRemoteURL)
+	api.POST("/robot/message/send/video/local", messageCtl.SendVideoMessageByLocalPath)
+	api.POST("/robot/message/send/voice", messageCtl.SendVoiceMessage)
+	api.POST("/robot/message/send/voice/local", messageCtl.SendVoiceMessageByLocalPath)
+	api.POST("/robot/message/send/music", messageCtl.SendMusicMessage)
+	api.POST("/robot/message/send/app", messageCtl.SendAppMessage)
+	api.POST("/robot/message/send/emoji", messageCtl.SendEmojiMessage)
+	api.POST("/robot/message/send/file", messageCtl.SendFileMessage)
+	api.POST("/robot/message/send/file/local", messageCtl.SendFileMessageByLocalPath)
+
+	// 系统消息相关接口
+	api.GET("/robot/system-messages", systemMessageCtl.GetRecentMonthMessages)
+	api.POST("/robot/system-messages/mark-as-read", systemMessageCtl.MarkAsReadBatch)
+
+	// 系统设置相关接口
+	api.GET("/robot/system-settings", systemSettingsCtl.GetSystemSettings)
+	api.POST("/robot/system-settings", systemSettingsCtl.SaveSystemSettings)
+
+	// OSS 设置相关接口
+	api.GET("/robot/oss-settings", ossSettingsCtl.GetOSSSettings)
+	api.POST("/robot/oss-settings", ossSettingsCtl.SaveOSSSettings)
+
+	// MCP 协议相关接口
+	api.GET("/robot/mcp/server", mcpServerCtl.GetMCPServer)
+	api.GET("/robot/mcp/servers", mcpServerCtl.GetMCPServers)
+	api.GET("/robot/mcp/server/tools", mcpServerCtl.GetMCPServerTools)
+	api.POST("/robot/mcp/server", mcpServerCtl.CreateMCPServer)
+	api.POST("/robot/mcp/server/enable", mcpServerCtl.EnableMCPServer)
+	api.POST("/robot/mcp/server/disable", mcpServerCtl.DisableMCPServer)
+	api.PUT("/robot/mcp/server", mcpServerCtl.UpdateMCPServer)
+	api.DELETE("/robot/mcp/server", mcpServerCtl.DeleteMCPServer)
+
+	// Agent Skills 技能管理接口
+	api.GET("/robot/skills", skillCtl.GetAllSkills)
+	api.GET("/robot/skill", skillCtl.GetSkill)
+	api.POST("/robot/skill/install", skillCtl.InstallSkill)
+	api.POST("/robot/skill/enable", skillCtl.EnableSkill)
+	api.POST("/robot/skill/disable", skillCtl.DisableSkill)
+	api.PUT("/robot/skill/update", skillCtl.UpdateSkill)
+	api.DELETE("/robot/skill/uninstall", skillCtl.UninstallSkill)
+	api.POST("/robot/skill/env-vars", skillCtl.SetSkillEnvVars)
+
+	// 系统提示词管理接口
+	api.GET("/robot/system-prompts", systemPromptCtl.List)
+	api.GET("/robot/system-prompt", systemPromptCtl.Get)
+	api.POST("/robot/system-prompt", systemPromptCtl.Create)
+	api.PUT("/robot/system-prompt", systemPromptCtl.Update)
+	api.DELETE("/robot/system-prompt", systemPromptCtl.Delete)
+
+	// 知识库分类管理接口
+	api.GET("/robot/knowledge/categories", knowledgeCategoryCtl.List)
+	api.POST("/robot/knowledge/category", knowledgeCategoryCtl.Create)
+	api.PUT("/robot/knowledge/category", knowledgeCategoryCtl.Update)
+	api.DELETE("/robot/knowledge/category", knowledgeCategoryCtl.Delete)
+
+	// 知识库 & 记忆管理接口
+	api.POST("/robot/knowledge/document", knowledgeCtl.AddDocument)
+	api.PUT("/robot/knowledge/document", knowledgeCtl.UpdateDocument)
+	api.DELETE("/robot/knowledge/document", knowledgeCtl.DeleteDocument)
+	api.POST("/robot/knowledge/document/enable", knowledgeCtl.EnableDocument)
+	api.POST("/robot/knowledge/document/disable", knowledgeCtl.DisableDocument)
+	api.GET("/robot/knowledge/documents", knowledgeCtl.ListDocuments)
+	api.POST("/robot/knowledge/search", knowledgeCtl.SearchKnowledge)
+	api.POST("/robot/knowledge/reindex", knowledgeCtl.ReindexAll)
+
+	// 图片知识库接口
+	api.POST("/robot/image-knowledge/document", knowledgeCtl.AddImageDocument)
+	api.DELETE("/robot/image-knowledge/document", knowledgeCtl.DeleteImageDocument)
+	api.GET("/robot/image-knowledge/documents", knowledgeCtl.ListImageDocuments)
+	api.POST("/robot/image-knowledge/search/text", knowledgeCtl.SearchImageByText)
+	api.POST("/robot/image-knowledge/search/image", knowledgeCtl.SearchImageByImage)
+	api.POST("/robot/image-knowledge/reindex", knowledgeCtl.ReindexAllImages)
+
+	// 全量重建向量索引
+	api.POST("/robot/vector/reindex-all", knowledgeCtl.ReindexAllVectors)
+
+	api.GET("/robot/chat/image/download", attachDownloadCtl.DownloadImage)
+	api.GET("/robot/chat/voice/download", attachDownloadCtl.DownloadVoice)
+	api.GET("/robot/chat/file/download", attachDownloadCtl.DownloadFile)
+	api.GET("/robot/chat/video/download", attachDownloadCtl.DownloadVideo)
+	api.POST("/robot/chat/media/upload", attachDownloadCtl.UploadMedia)
+	api.GET("/robot/chat/history", chatHistoryCtl.GetChatHistory)
+
+	api.GET("/robot/global-settings", globalSettingsCtl.GetGlobalSettings)
+	api.POST("/robot/global-settings", globalSettingsCtl.SaveGlobalSettings)
+	api.GET("/robot/friend-settings", friendSettingsCtl.GetFriendSettings)
+	api.POST("/robot/friend-settings", friendSettingsCtl.SaveFriendSettings)
+	api.GET("/robot/chat-room-settings", chatRoomSettingsCtl.GetChatRoomSettings)
+	api.POST("/robot/chat-room-settings", chatRoomSettingsCtl.SaveChatRoomSettings)
+
+	// 朋友圈接口
+	api.GET("/robot/moments/list", momentsCtl.FriendCircleGetList)
+	api.GET("/robot/moments/sync", momentsCtl.SyncMoments)
+	api.GET("/robot/moments/settings", momentsCtl.GetFriendCircleSettings)
+	api.GET("/robot/moments/get-detail", momentsCtl.FriendCircleGetDetail)
+	api.GET("/robot/moments/get-id-detail", momentsCtl.FriendCircleGetIdDetail)
+	api.GET("/robot/moments/down-media", momentsCtl.FriendCircleDownFriendCircleMedia)
+	api.POST("/robot/moments/settings", momentsCtl.SaveFriendCircleSettings)
+	api.POST("/robot/moments/comment", momentsCtl.FriendCircleComment)
+	api.POST("/robot/moments/upload-media", momentsCtl.FriendCircleUpload)
+	api.POST("/robot/moments/post", momentsCtl.FriendCirclePost)
+	api.POST("/robot/moments/operate", momentsCtl.FriendCircleOperation)
+	api.POST("/robot/moments/privacy-settings", momentsCtl.FriendCirclePrivacySettings)
+
+	// 豆包AI回调相关接口
+	api.POST("/robot/ai-callback/voice/doubao-tts", aiCallbackCtl.DoubaoTTS)
+
+	// 微信服务端回调相关接口
+	api.POST("/wechat-client/:wechatID/sync-message", wechatServerCallbackCtl.SyncMessageCallback)
+	api.POST("/wechat-client/:wechatID/logout", wechatServerCallbackCtl.LogoutCallback)
+
+	// 微信小程序相关接口
+	api.POST("/robot/wxapp/qrcode-auth-login", wxAppCtl.WxappQrcodeAuthLogin)
+
+	// 公众号相关接口
+	api.POST("/robot/official-account/get-app-msg-ext", officialAccountCtx.GetAppMsgExt)
+
+	// Pprof 代理接口 - 代理项目B的pprof监控
+	pprofGroup := api.Group("/robot/pprof")
+	pprofGroup.GET("/*proxyPath", pprofProxyCtl.ProxyPprof)
+	pprofGroup.POST("/*proxyPath", pprofProxyCtl.ProxyPprof)
+
+	return nil
+}

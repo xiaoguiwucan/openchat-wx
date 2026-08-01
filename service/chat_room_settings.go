@@ -1,0 +1,447 @@
+package service
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"regexp"
+	"strings"
+	"github.com/xiaoguiwucan/openchat-wx/interface/settings"
+	"github.com/xiaoguiwucan/openchat-wx/model"
+	"github.com/xiaoguiwucan/openchat-wx/pkg/robot"
+	"github.com/xiaoguiwucan/openchat-wx/repository"
+	"github.com/xiaoguiwucan/openchat-wx/utils"
+	"github.com/xiaoguiwucan/openchat-wx/vars"
+)
+
+type ChatRoomSettingsService struct {
+	ctx              context.Context
+	Message          *model.Message
+	gsRepo           *repository.GlobalSettings
+	crsRepo          *repository.ChatRoomSettings
+	globalSettings   *model.GlobalSettings
+	chatRoomSettings *model.ChatRoomSettings
+}
+
+var _ settings.Settings = (*ChatRoomSettingsService)(nil)
+
+func NewChatRoomSettingsService(ctx context.Context) *ChatRoomSettingsService {
+	return &ChatRoomSettingsService{
+		ctx:     ctx,
+		gsRepo:  repository.NewGlobalSettingsRepo(ctx, vars.DB),
+		crsRepo: repository.NewChatRoomSettingsRepo(ctx, vars.DB),
+	}
+}
+
+func (s *ChatRoomSettingsService) GetChatRoomSettings(chatRoomID string) (*model.ChatRoomSettings, error) {
+	return s.crsRepo.GetChatRoomSettings(chatRoomID)
+}
+
+func (s *ChatRoomSettingsService) InitByMessage(message *model.Message) error {
+	s.Message = message
+	globalSettings, err := s.gsRepo.GetGlobalSettings()
+	if err != nil {
+		return err
+	}
+	s.globalSettings = globalSettings
+	chatRoomSettings, err := s.crsRepo.GetChatRoomSettings(message.FromWxID)
+	if err != nil {
+		return err
+	}
+	s.chatRoomSettings = chatRoomSettings
+	return nil
+}
+
+func (s *ChatRoomSettingsService) GetAIConfig() settings.AIConfig {
+	aiConfig := settings.AIConfig{}
+	if s.globalSettings != nil {
+		if s.globalSettings.ChatBaseURL != "" {
+			aiConfig.BaseURL = s.globalSettings.ChatBaseURL
+		}
+		if s.globalSettings.ChatAPIKey != "" {
+			aiConfig.APIKey = s.globalSettings.ChatAPIKey
+		}
+		if s.globalSettings.ChatModel != "" {
+			aiConfig.Model = s.globalSettings.ChatModel
+		}
+		if s.globalSettings.ImageRecognitionModel != "" {
+			aiConfig.ImageRecognitionModel = s.globalSettings.ImageRecognitionModel
+		}
+		if s.globalSettings.ChatPrompt != "" {
+			aiConfig.Prompt = s.globalSettings.ChatPrompt
+		}
+		if s.globalSettings.MaxCompletionTokens != nil {
+			aiConfig.MaxCompletionTokens = *s.globalSettings.MaxCompletionTokens
+		}
+		if s.globalSettings.ImageAISettings != nil {
+			aiConfig.ImageAISettings = s.globalSettings.ImageAISettings
+		}
+		if s.globalSettings.TTSModel != nil && *s.globalSettings.TTSModel != "" {
+			aiConfig.TTSModel = *s.globalSettings.TTSModel
+		}
+		if s.globalSettings.TTSSettings != nil {
+			aiConfig.TTSSettings = s.globalSettings.TTSSettings
+		}
+	}
+	if s.chatRoomSettings != nil {
+		if s.chatRoomSettings.ChatBaseURL != nil && *s.chatRoomSettings.ChatBaseURL != "" {
+			aiConfig.BaseURL = *s.chatRoomSettings.ChatBaseURL
+		}
+		if s.chatRoomSettings.ChatAPIKey != nil && *s.chatRoomSettings.ChatAPIKey != "" {
+			aiConfig.APIKey = *s.chatRoomSettings.ChatAPIKey
+		}
+		if s.chatRoomSettings.ChatModel != nil && *s.chatRoomSettings.ChatModel != "" {
+			aiConfig.Model = *s.chatRoomSettings.ChatModel
+		}
+		if s.chatRoomSettings.ImageRecognitionModel != nil && *s.chatRoomSettings.ImageRecognitionModel != "" {
+			aiConfig.ImageRecognitionModel = *s.chatRoomSettings.ImageRecognitionModel
+		}
+		if s.chatRoomSettings.ChatPrompt != nil && *s.chatRoomSettings.ChatPrompt != "" {
+			aiConfig.Prompt = *s.chatRoomSettings.ChatPrompt
+		}
+		if s.chatRoomSettings.MaxCompletionTokens != nil {
+			aiConfig.MaxCompletionTokens = *s.chatRoomSettings.MaxCompletionTokens
+		}
+		if s.chatRoomSettings.ImageAISettings != nil {
+			aiConfig.ImageAISettings = s.chatRoomSettings.ImageAISettings
+		}
+		if s.chatRoomSettings.TTSModel != nil && *s.chatRoomSettings.TTSModel != "" {
+			aiConfig.TTSModel = *s.chatRoomSettings.TTSModel
+		}
+		if s.chatRoomSettings.TTSSettings != nil {
+			aiConfig.TTSSettings = s.chatRoomSettings.TTSSettings
+		}
+	}
+	aiConfig.BaseURL = utils.NormalizeAIBaseURL(aiConfig.BaseURL)
+	return aiConfig
+}
+
+func (s *ChatRoomSettingsService) IsAIChatEnabled() bool {
+	if s.chatRoomSettings != nil && s.chatRoomSettings.ChatAIEnabled != nil {
+		return *s.chatRoomSettings.ChatAIEnabled
+	}
+	if s.globalSettings != nil && s.globalSettings.ChatAIEnabled != nil {
+		return *s.globalSettings.ChatAIEnabled
+	}
+	return false
+}
+
+func (s *ChatRoomSettingsService) IsAIDrawingEnabled() bool {
+	if s.chatRoomSettings != nil && s.chatRoomSettings.ImageAIEnabled != nil {
+		return *s.chatRoomSettings.ImageAIEnabled
+	}
+	if s.globalSettings != nil && s.globalSettings.ImageAIEnabled != nil {
+		return *s.globalSettings.ImageAIEnabled
+	}
+	return false
+}
+
+func (s *ChatRoomSettingsService) IsTTSEnabled() bool {
+	if s.chatRoomSettings != nil && s.chatRoomSettings.TTSEnabled != nil {
+		return *s.chatRoomSettings.TTSEnabled
+	}
+	if s.globalSettings != nil && s.globalSettings.TTSEnabled != nil {
+		return *s.globalSettings.TTSEnabled
+	}
+	return false
+}
+
+func (s *ChatRoomSettingsService) IsShortVideoParsingEnabled() bool {
+	if s.chatRoomSettings != nil && s.chatRoomSettings.ShortVideoParsingEnabled != nil {
+		return *s.chatRoomSettings.ShortVideoParsingEnabled
+	}
+	return false
+}
+
+func (s *ChatRoomSettingsService) logAITrigger(reason, triggerWord, messageContent string) {
+	if s.Message == nil {
+		return
+	}
+	contentPreview := strings.ReplaceAll(strings.TrimSpace(messageContent), "\n", `\n`)
+	contentRunes := []rune(contentPreview)
+	if len(contentRunes) > 80 {
+		contentPreview = string(contentRunes[:80]) + "..."
+	}
+	log.Printf("[AITrigger] reason=%s trigger_word=%q msg_id=%d from=%s sender=%s is_at_me=%t app_msg_type=%d content=%q",
+		reason,
+		triggerWord,
+		s.Message.MsgId,
+		s.Message.FromWxID,
+		s.Message.SenderWxID,
+		s.Message.IsAtMe,
+		s.Message.AppMsgType,
+		contentPreview,
+	)
+}
+
+func (s *ChatRoomSettingsService) IsAITrigger() bool {
+	messageContent := s.Message.Content
+	if s.Message.AppMsgType == model.AppMsgTypequote {
+		var xmlMessage robot.XmlMessage
+		if err := vars.RobotRuntime.XmlDecoder(messageContent, &xmlMessage); err == nil {
+			messageContent = xmlMessage.AppMsg.Title
+		}
+	}
+	if s.Message.IsAtMe {
+		// 是否是 @所有人
+		atAllRegex := regexp.MustCompile(vars.AtAllRegexp)
+		if atAllRegex.MatchString(messageContent) {
+			// 如果是 @所有人，则不处理
+			return false
+		}
+		s.logAITrigger("mentioned", "", messageContent)
+		return true
+	}
+	if s.chatRoomSettings == nil {
+		if s.globalSettings == nil {
+			return false
+		}
+		if s.globalSettings.ChatAIEnabled == nil || !*s.globalSettings.ChatAIEnabled {
+			return false
+		}
+		if *s.globalSettings.ChatAITrigger != "" && strings.HasPrefix(messageContent, *s.globalSettings.ChatAITrigger) {
+			s.logAITrigger("trigger_word.global", *s.globalSettings.ChatAITrigger, messageContent)
+			return true
+		}
+		return false
+	}
+	if s.chatRoomSettings.ChatAIEnabled == nil || !*s.chatRoomSettings.ChatAIEnabled {
+		return false
+	}
+	if s.chatRoomSettings.ChatAITrigger != nil && *s.chatRoomSettings.ChatAITrigger != "" {
+		if strings.HasPrefix(messageContent, *s.chatRoomSettings.ChatAITrigger) {
+			s.logAITrigger("trigger_word.chat_room", *s.chatRoomSettings.ChatAITrigger, messageContent)
+			return true
+		}
+		return false
+	}
+	if s.globalSettings != nil && s.globalSettings.ChatAITrigger != nil && *s.globalSettings.ChatAITrigger != "" &&
+		strings.HasPrefix(messageContent, *s.globalSettings.ChatAITrigger) {
+		s.logAITrigger("trigger_word.global_fallback", *s.globalSettings.ChatAITrigger, messageContent)
+		return true
+	}
+	return false
+}
+
+func (s *ChatRoomSettingsService) GetAITriggerWord() string {
+	if s.chatRoomSettings != nil && s.chatRoomSettings.ChatAITrigger != nil && *s.chatRoomSettings.ChatAITrigger != "" {
+		return *s.chatRoomSettings.ChatAITrigger
+	}
+	if s.globalSettings != nil && s.globalSettings.ChatAITrigger != nil && *s.globalSettings.ChatAITrigger != "" {
+		return *s.globalSettings.ChatAITrigger
+	}
+	return ""
+}
+
+func (s *ChatRoomSettingsService) GetChatRoomWelcomeConfig(chatRoomID string) (*model.ChatRoomSettings, error) {
+	globalSettings, err := s.gsRepo.GetGlobalSettings()
+	if err != nil {
+		return nil, err
+	}
+	if globalSettings == nil {
+		return nil, fmt.Errorf("加载全局配置失败")
+	}
+	chatRoomSetting, err := s.crsRepo.GetChatRoomSettings(chatRoomID)
+	if err != nil {
+		return nil, err
+	}
+	if chatRoomSetting == nil {
+		return &model.ChatRoomSettings{
+			WelcomeEnabled:  globalSettings.WelcomeEnabled,
+			WelcomeType:     globalSettings.WelcomeType,
+			WelcomeText:     globalSettings.WelcomeText,
+			WelcomeEmojiMD5: globalSettings.WelcomeEmojiMD5,
+			WelcomeEmojiLen: globalSettings.WelcomeEmojiLen,
+			WelcomeImageURL: globalSettings.WelcomeImageURL,
+			WelcomeURL:      globalSettings.WelcomeURL,
+		}, nil
+	}
+	return chatRoomSetting, nil
+}
+
+func (s *ChatRoomSettingsService) GetPatConfig() settings.PatConfig {
+	if s.chatRoomSettings != nil {
+		if s.chatRoomSettings.PatEnabled != nil {
+			return settings.PatConfig{
+				PatEnabled:     *s.chatRoomSettings.PatEnabled,
+				PatType:        s.chatRoomSettings.PatType,
+				PatText:        s.chatRoomSettings.PatText,
+				PatVoiceTimbre: s.chatRoomSettings.PatVoiceTimbre,
+			}
+		}
+	}
+	if s.globalSettings != nil {
+		if s.globalSettings.PatEnabled != nil {
+			return settings.PatConfig{
+				PatEnabled:     *s.globalSettings.PatEnabled,
+				PatType:        s.globalSettings.PatType,
+				PatText:        s.globalSettings.PatText,
+				PatVoiceTimbre: s.globalSettings.PatVoiceTimbre,
+			}
+		}
+	}
+	return settings.PatConfig{}
+}
+
+func (s *ChatRoomSettingsService) GetLeaveChatRoomConfig(chatRoomID string) *model.ChatRoomSettings {
+	globalSettings, err := s.gsRepo.GetGlobalSettings()
+	if err != nil {
+		return nil
+	}
+	chatRoomSettings, err := s.crsRepo.GetChatRoomSettings(chatRoomID)
+	if err != nil {
+		return nil
+	}
+	if chatRoomSettings != nil {
+		return chatRoomSettings
+	}
+	if globalSettings != nil {
+		return &model.ChatRoomSettings{
+			LeaveChatRoomAlertEnabled: globalSettings.LeaveChatRoomAlertEnabled,
+			LeaveChatRoomAlertText:    globalSettings.LeaveChatRoomAlertText,
+		}
+	}
+	return nil
+}
+
+func (s *ChatRoomSettingsService) GetAllEnableChatRank() ([]*model.ChatRoomSettings, error) {
+	if vars.RobotRuntime.Status == model.RobotStatusOffline {
+		return []*model.ChatRoomSettings{}, nil
+	}
+	return s.crsRepo.GetAllEnableChatRank()
+}
+
+func (s *ChatRoomSettingsService) GetAllEnableAISummary() ([]*model.ChatRoomSettings, error) {
+	if vars.RobotRuntime.Status == model.RobotStatusOffline {
+		return []*model.ChatRoomSettings{}, nil
+	}
+	return s.crsRepo.GetAllEnableAISummary()
+}
+
+func (s *ChatRoomSettingsService) GetAllEnableGoodMorning() ([]*model.ChatRoomSettings, error) {
+	if vars.RobotRuntime.Status == model.RobotStatusOffline {
+		return []*model.ChatRoomSettings{}, nil
+	}
+	return s.crsRepo.GetAllEnableGoodMorning()
+}
+
+func (s *ChatRoomSettingsService) GetAllEnableNews() ([]*model.ChatRoomSettings, error) {
+	if vars.RobotRuntime.Status == model.RobotStatusOffline {
+		return []*model.ChatRoomSettings{}, nil
+	}
+	return s.crsRepo.GetAllEnableNews()
+}
+
+func (s *ChatRoomSettingsService) SaveChatRoomSettings(data *model.ChatRoomSettings) error {
+	if err := s.normalizeKnowledgeCategories(data); err != nil {
+		return err
+	}
+	if err := s.normalizeMemoryExtractionBlacklist(data); err != nil {
+		return err
+	}
+	if data.ID == 0 {
+		return s.crsRepo.Create(data)
+	}
+	return s.crsRepo.Update(data)
+}
+
+func normalizeKnowledgeCategoryCodes(codes []string) []string {
+	return normalizeStringList(codes)
+}
+
+func normalizeStringList(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+
+	normalized := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		normalized = append(normalized, value)
+	}
+
+	return normalized
+}
+
+func (s *ChatRoomSettingsService) normalizeKnowledgeCategories(data *model.ChatRoomSettings) error {
+	if data == nil || data.KnowledgeCategories == nil {
+		return nil
+	}
+
+	codes, err := data.GetKnowledgeCategoryCodes()
+	if err != nil {
+		return fmt.Errorf("knowledge_categories 格式错误: %w", err)
+	}
+
+	normalized := normalizeKnowledgeCategoryCodes(codes)
+	payload, err := json.Marshal(normalized)
+	if err != nil {
+		return fmt.Errorf("序列化 knowledge_categories 失败: %w", err)
+	}
+	data.KnowledgeCategories = payload
+
+	if len(normalized) == 0 {
+		return nil
+	}
+
+	categoryRepo := repository.NewKnowledgeCategoryRepo(s.ctx, vars.DB)
+	categories, err := categoryRepo.GetByCodes(normalized)
+	if err != nil {
+		return fmt.Errorf("查询知识库分类失败: %w", err)
+	}
+
+	categoryByCode := make(map[string]*model.KnowledgeCategory, len(categories))
+	for _, category := range categories {
+		categoryByCode[category.Code] = category
+	}
+
+	missingCodes := make([]string, 0)
+	unsupportedCodes := make([]string, 0)
+	for _, code := range normalized {
+		category, ok := categoryByCode[code]
+		if !ok {
+			missingCodes = append(missingCodes, code)
+			continue
+		}
+		if category.Type != model.KnowledgeCategoryTypeText {
+			unsupportedCodes = append(unsupportedCodes, code)
+		}
+	}
+
+	if len(missingCodes) > 0 {
+		return fmt.Errorf("以下知识库不存在: %s", strings.Join(missingCodes, ", "))
+	}
+	if len(unsupportedCodes) > 0 {
+		return fmt.Errorf("以下知识库不是文本知识库，暂不支持绑定到群聊: %s", strings.Join(unsupportedCodes, ", "))
+	}
+
+	return nil
+}
+
+func (s *ChatRoomSettingsService) normalizeMemoryExtractionBlacklist(data *model.ChatRoomSettings) error {
+	if data == nil || data.MemoryExtractionBlacklist == nil {
+		return nil
+	}
+
+	wxIDs, err := data.GetMemoryExtractionBlacklist()
+	if err != nil {
+		return fmt.Errorf("memory_extraction_blacklist 格式错误: %w", err)
+	}
+
+	payload, err := json.Marshal(normalizeStringList(wxIDs))
+	if err != nil {
+		return fmt.Errorf("序列化 memory_extraction_blacklist 失败: %w", err)
+	}
+	data.MemoryExtractionBlacklist = payload
+
+	return nil
+}

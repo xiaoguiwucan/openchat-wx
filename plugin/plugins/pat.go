@@ -1,0 +1,116 @@
+package plugins
+
+import (
+	"bytes"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"log"
+	"github.com/xiaoguiwucan/openchat-wx/interface/plugin"
+	"github.com/xiaoguiwucan/openchat-wx/model"
+	"github.com/xiaoguiwucan/openchat-wx/plugin/pkg"
+)
+
+type PatPlugin struct{}
+
+func NewPatPlugin() plugin.MessageHandler {
+	return &PatPlugin{}
+}
+
+func (p *PatPlugin) GetName() string {
+	return "Pat"
+}
+
+func (p *PatPlugin) GetLabels() []string {
+	return []string{"pat"}
+}
+
+func (p *PatPlugin) Match(ctx *plugin.MessageContext) bool {
+	return ctx.Pat
+}
+
+func (p *PatPlugin) PreAction(ctx *plugin.MessageContext) bool {
+	return true
+}
+
+func (p *PatPlugin) PostAction(ctx *plugin.MessageContext) {
+
+}
+
+func (p *PatPlugin) Run(ctx *plugin.MessageContext) {
+	patConfig := ctx.Settings.GetPatConfig()
+	if !patConfig.PatEnabled {
+		return
+	}
+	if patConfig.PatType == model.PatTypeText {
+		ctx.MessageService.SendTextMessage(ctx.Message.FromWxID, patConfig.PatText)
+		return
+	}
+	if patConfig.PatType == model.PatTypeVoice {
+		isTTSEnabled := ctx.Settings.IsTTSEnabled()
+		if !isTTSEnabled {
+			ctx.MessageService.SendTextMessage(ctx.Message.FromWxID, "文本转语音功能未开启，请联系管理员。")
+			return
+		}
+		aiConfig := ctx.Settings.GetAIConfig()
+		var ttsSettingsMap map[string]json.RawMessage
+		if err := json.Unmarshal(aiConfig.TTSSettings, &ttsSettingsMap); err != nil {
+			log.Printf("反序列化文本转语音配置失败: %v", err)
+			return
+		}
+		switch aiConfig.TTSModel {
+		case "doubao":
+			modelRaw, ok := ttsSettingsMap["doubao"]
+			if !ok {
+				log.Printf("文本转语音配置中缺少 doubao 配置")
+				return
+			}
+			var doubaoConfig pkg.DoubaoTTSConfig
+			if err := json.Unmarshal(modelRaw, &doubaoConfig); err != nil {
+				log.Printf("反序列化豆包文本转语音配置失败: %v", err)
+				return
+			}
+			doubaoConfig.RequestBody.ReqParams.Speaker = patConfig.PatVoiceTimbre
+			doubaoConfig.RequestBody.ReqParams.Text = patConfig.PatText
+
+			audioBase64, err := pkg.DoubaoTTSSubmit(&doubaoConfig)
+			if err != nil {
+				ctx.MessageService.SendTextMessage(ctx.Message.FromWxID, fmt.Sprintf("豆包文本转语音请求失败: %v", err), ctx.Message.SenderWxID)
+				return
+			}
+			audioData, err := base64.StdEncoding.DecodeString(audioBase64)
+			if err != nil {
+				ctx.MessageService.SendTextMessage(ctx.Message.FromWxID, fmt.Sprintf("音频数据解码失败: %v", err), ctx.Message.SenderWxID)
+				return
+			}
+			audioReader := bytes.NewReader(audioData)
+			ctx.MessageService.MsgSendVoice(ctx.Message.FromWxID, audioReader, fmt.Sprintf(".%s", doubaoConfig.RequestBody.ReqParams.AudioParams.Format))
+		case "mimo":
+			modelRaw, ok := ttsSettingsMap["mimo"]
+			if !ok {
+				log.Printf("文本转语音配置中缺少 mimo 配置")
+				return
+			}
+			var mimoConfig pkg.MimoTTSConfig
+			if err := json.Unmarshal(modelRaw, &mimoConfig); err != nil {
+				log.Printf("反序列化 mimo 文本转语音配置失败: %v", err)
+				return
+			}
+			if mimoConfig.BaseURL == "" {
+				mimoConfig.BaseURL = aiConfig.BaseURL
+			}
+			if mimoConfig.APIKey == "" {
+				mimoConfig.APIKey = aiConfig.APIKey
+			}
+			wavBytes, err := pkg.MimoTTSSubmit(&mimoConfig, patConfig.PatText, patConfig.PatVoiceTimbre)
+			if err != nil {
+				ctx.MessageService.SendTextMessage(ctx.Message.FromWxID, fmt.Sprintf("mimo 文本转语音请求失败: %v", err), ctx.Message.SenderWxID)
+				return
+			}
+			ctx.MessageService.MsgSendVoice(ctx.Message.FromWxID, bytes.NewReader(wavBytes), ".wav")
+		default:
+			log.Printf("未知的 TTS 模型: %s", aiConfig.TTSModel)
+			return
+		}
+	}
+}

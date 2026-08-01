@@ -1,0 +1,27 @@
+.env
+.deploy/local/.env
+.deploy/server/.env
+AGENTS.local.md
+template
+dev-wechat-ipad.yml
+wechat-robot-client
+pkg/good_morning/test_output
+docs
+__debug*
+.gocache/
+
+# local self-signed certs (do not commit)
+.deploy/local/secrets/nginx/*.key
+.deploy/local/secrets/nginx/*.crt
+.deploy/local/secrets/nginx/*.pem
+
+.deploy/local/wechat_admin_redis_data
+.deploy/local/wechat_admin_mysql_data
+.deploy/local/qdrant_data
+.deploy/local/wechat-server
+.deploy/local/xiaohongshu-mcp
+.deploy/local/wechat-robot
+
+# local build/test artifacts
+openchat-wx
+dist/

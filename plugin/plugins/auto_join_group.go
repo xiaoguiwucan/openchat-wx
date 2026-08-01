@@ -1,0 +1,48 @@
+package plugins
+
+import (
+	"context"
+	"regexp"
+	"github.com/xiaoguiwucan/openchat-wx/interface/plugin"
+	"github.com/xiaoguiwucan/openchat-wx/service"
+)
+
+type AutoJoinGroupPlugin struct{}
+
+var re = regexp.MustCompile(`^申请进群\s+`)
+
+func NewAutoJoinGroupPlugin() plugin.MessageHandler {
+	return &AutoJoinGroupPlugin{}
+}
+
+func (p *AutoJoinGroupPlugin) GetName() string {
+	return "Auto Join Group"
+}
+
+func (p *AutoJoinGroupPlugin) GetLabels() []string {
+	return []string{"text", "auto"}
+}
+
+func (p *AutoJoinGroupPlugin) Match(ctx *plugin.MessageContext) bool {
+	return re.MatchString(ctx.MessageContent)
+}
+
+func (p *AutoJoinGroupPlugin) PreAction(ctx *plugin.MessageContext) bool {
+	return true
+}
+
+func (p *AutoJoinGroupPlugin) PostAction(ctx *plugin.MessageContext) {
+
+}
+
+func (p *AutoJoinGroupPlugin) Run(ctx *plugin.MessageContext) {
+	chatRoomName := re.ReplaceAllString(ctx.MessageContent, "")
+	if chatRoomName == "" {
+		ctx.MessageService.SendTextMessage(ctx.Message.FromWxID, "群聊名称不能为空")
+		return
+	}
+	err := service.NewChatRoomService(context.Background()).AutoInviteChatRoomMember(chatRoomName, []string{ctx.Message.FromWxID})
+	if err != nil {
+		ctx.MessageService.SendTextMessage(ctx.Message.FromWxID, err.Error())
+	}
+}

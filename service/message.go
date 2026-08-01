@@ -1,0 +1,2294 @@
+package service
+
+import (
+	"bytes"
+	"context"
+	"crypto/md5"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/xml"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"math/rand"
+	"mime/multipart"
+	"os"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/go-resty/resty/v2"
+	"github.com/google/uuid"
+	"github.com/openai/openai-go/v3"
+
+	"github.com/xiaoguiwucan/openchat-wx/dto"
+	"github.com/xiaoguiwucan/openchat-wx/interface/plugin"
+	"github.com/xiaoguiwucan/openchat-wx/interface/settings"
+	"github.com/xiaoguiwucan/openchat-wx/model"
+	"github.com/xiaoguiwucan/openchat-wx/pkg/robot"
+	"github.com/xiaoguiwucan/openchat-wx/repository"
+	"github.com/xiaoguiwucan/openchat-wx/vars"
+)
+
+type MessageService struct {
+	ctx            context.Context
+	msgRepo        *repository.Message
+	crmRepo        *repository.ChatRoomMember
+	sysmsgRepo     *repository.SystemMessage
+	robotAdminRepo *repository.RobotAdmin
+}
+
+var _ plugin.MessageServiceIface = (*MessageService)(nil)
+
+func NewMessageService(ctx context.Context) *MessageService {
+	return &MessageService{
+		ctx:            ctx,
+		msgRepo:        repository.NewMessageRepo(ctx, vars.DB),
+		crmRepo:        repository.NewChatRoomMemberRepo(ctx, vars.DB),
+		sysmsgRepo:     repository.NewSystemMessageRepo(ctx, vars.DB),
+		robotAdminRepo: repository.NewRobotAdminRepo(ctx, vars.AdminDB),
+	}
+}
+
+func buildMessageLogPreview(content string) string {
+	preview := strings.ReplaceAll(strings.TrimSpace(content), "\n", `\n`)
+	previewRunes := []rune(preview)
+	if len(previewRunes) > 80 {
+		return string(previewRunes[:80]) + "..."
+	}
+	return preview
+}
+
+func shouldLogPluginMatch(messagePlugin plugin.MessageHandler) bool {
+	return !slices.Contains(messagePlugin.GetLabels(), "chat")
+}
+
+func (s *MessageService) logPluginMatch(messagePlugin plugin.MessageHandler, msgCtx *plugin.MessageContext) {
+	if msgCtx == nil || msgCtx.Message == nil || !shouldLogPluginMatch(messagePlugin) {
+		return
+	}
+	log.Printf("[PluginMatch] plugin=%s labels=%v msg_id=%d from=%s sender=%s is_chat_room=%t app_msg_type=%d content=%q",
+		messagePlugin.GetName(),
+		messagePlugin.GetLabels(),
+		msgCtx.Message.MsgId,
+		msgCtx.Message.FromWxID,
+		msgCtx.Message.SenderWxID,
+		msgCtx.Message.IsChatRoom,
+		msgCtx.Message.AppMsgType,
+		buildMessageLogPreview(msgCtx.MessageContent),
+	)
+}
+
+// ProcessTextMessage 处理文本消息
+func (s *MessageService) ProcessTextMessage(message *model.Message, msgSettings settings.Settings) {
+	msgCtx := &plugin.MessageContext{
+		Context:        s.ctx,
+		Settings:       msgSettings,
+		Message:        message,
+		MessageContent: message.Content,
+		MessageService: s,
+	}
+	for _, messagePlugin := range vars.MessagePlugin.Plugins {
+		if !slices.Contains(messagePlugin.GetLabels(), "text") {
+			continue
+		}
+		match := messagePlugin.Match(msgCtx)
+		if !match {
+			continue
+		}
+		s.logPluginMatch(messagePlugin, msgCtx)
+		messagePlugin.Run(msgCtx)
+	}
+}
+
+// ProcessImageMessage 处理图片消息
+func (s *MessageService) ProcessImageMessage(message *model.Message, msgSettings settings.Settings) {
+	msgCtx := &plugin.MessageContext{
+		Context:        s.ctx,
+		Settings:       msgSettings,
+		Message:        message,
+		MessageContent: message.Content,
+		MessageService: s,
+	}
+	for _, messagePlugin := range vars.MessagePlugin.Plugins {
+		if !slices.Contains(messagePlugin.GetLabels(), "image") {
+			continue
+		}
+		match := messagePlugin.Match(msgCtx)
+		if !match {
+			continue
+		}
+		s.logPluginMatch(messagePlugin, msgCtx)
+		messagePlugin.Run(msgCtx)
+	}
+}
+
+// ProcessVoiceMessage 处理语音消息
+func (s *MessageService) ProcessVoiceMessage(message *model.Message) {
+
+}
+
+// ProcessVideoMessage 处理视频消息
+func (s *MessageService) ProcessVideoMessage(message *model.Message) {
+
+}
+
+// ProcessEmojiMessage 处理表情消息
+func (s *MessageService) ProcessEmojiMessage(message *model.Message) {
+
+}
+
+// ProcessReferMessage 处理引用消息
+func (s *MessageService) ProcessReferMessage(message *model.Message, msgSettings settings.Settings) {
+	var xmlMessage robot.XmlMessage
+	err := vars.RobotRuntime.XmlDecoder(message.Content, &xmlMessage)
+	if err != nil {
+		log.Printf("解析引用消息失败: %v", err)
+		return
+	}
+	referMessageID, err := strconv.ParseInt(xmlMessage.AppMsg.ReferMsg.SvrID, 10, 64)
+	if err != nil {
+		log.Printf("解析引用消息ID失败: %v", err)
+		return
+	}
+	referMessage, err := s.msgRepo.GetByMsgID(referMessageID)
+	if err != nil {
+		log.Printf("获取引用消息失败: %v", err)
+		return
+	}
+	if referMessage == nil {
+		log.Printf("获取引用消息为空")
+		return
+	}
+	msgCtx := &plugin.MessageContext{
+		Context:        s.ctx,
+		Settings:       msgSettings,
+		Message:        message,
+		MessageContent: xmlMessage.AppMsg.Title,
+		ReferMessage:   referMessage,
+		MessageService: s,
+	}
+	for _, messagePlugin := range vars.MessagePlugin.Plugins {
+		if !slices.Contains(messagePlugin.GetLabels(), "text") {
+			continue
+		}
+		match := messagePlugin.Match(msgCtx)
+		if !match {
+			continue
+		}
+		s.logPluginMatch(messagePlugin, msgCtx)
+		messagePlugin.Run(msgCtx)
+	}
+}
+
+func (s *MessageService) ProcessRedEnvelopesMessage(message *model.Message, msgSettings settings.Settings) {
+	msgCtx := &plugin.MessageContext{
+		Context:        s.ctx,
+		Settings:       msgSettings,
+		Message:        message,
+		MessageContent: message.Content,
+		MessageService: s,
+	}
+	for _, messagePlugin := range vars.MessagePlugin.Plugins {
+		if !slices.Contains(messagePlugin.GetLabels(), "red-envelopes") {
+			continue
+		}
+		match := messagePlugin.Match(msgCtx)
+		if !match {
+			continue
+		}
+		s.logPluginMatch(messagePlugin, msgCtx)
+		messagePlugin.Run(msgCtx)
+	}
+}
+
+// ProcessAppMessage 处理应用消息
+func (s *MessageService) ProcessAppMessage(message *model.Message, msgSettings settings.Settings) {
+	if message.AppMsgType == model.AppMsgTypequote {
+		s.ProcessReferMessage(message, msgSettings)
+		return
+	}
+	if message.AppMsgType == model.AppMsgTypeRedEnvelopes {
+		s.ProcessRedEnvelopesMessage(message, msgSettings)
+		return
+	}
+	if message.AppMsgType == model.AppMsgTypeUrl {
+		xmlMessage, err := s.XmlDecoder(message.Content)
+		if err != nil {
+			log.Printf("解析应用消息失败: %v", err)
+			return
+		}
+		if xmlMessage.AppMsg.Title == "邀请你加入群聊" || xmlMessage.AppMsg.Title == "Group Chat Invitation" {
+			now := time.Now().Unix()
+			err := s.sysmsgRepo.Create(&model.SystemMessage{
+				MsgID:       message.MsgId,
+				ClientMsgID: message.ClientMsgId,
+				Type:        model.SystemMessageTypeJoinChatRoom,
+				ImageURL:    xmlMessage.AppMsg.ThumbURL,
+				Description: xmlMessage.AppMsg.Des,
+				Content:     message.Content,
+				FromWxid:    message.FromWxID,
+				ToWxid:      message.ToWxID,
+				Status:      0,
+				IsRead:      false,
+				CreatedAt:   now,
+				UpdatedAt:   now,
+			})
+			if err != nil {
+				log.Printf("入库邀请进群通知消息失败: %v", err)
+				return
+			}
+			if message.ID > 0 {
+				// 消息已经没什么用了，删除掉
+				err := s.msgRepo.Delete(message)
+				if err != nil {
+					log.Printf("删除消息失败: %v", err)
+					return
+				}
+			}
+			return
+		}
+		return
+	}
+}
+
+// ProcessShareCardMessage 处理分享名片消息
+func (s *MessageService) ProcessShareCardMessage(message *model.Message) {
+
+}
+
+// ProcessFriendVerifyMessage 处理好友添加请求通知消息
+func (s *MessageService) ProcessFriendVerifyMessage(message *model.Message) {
+	now := time.Now().Unix()
+	var xmlMessage robot.NewFriendMessage
+	err := vars.RobotRuntime.XmlDecoder(message.Content, &xmlMessage)
+	if err != nil {
+		log.Printf("解析好友添加请求消息失败: %v", err)
+		return
+	}
+
+	systeMessage := model.SystemMessage{
+		MsgID:       message.MsgId,
+		ClientMsgID: message.ClientMsgId,
+		Type:        model.SystemMessageTypeVerify,
+		ImageURL:    xmlMessage.BigHeadImgURL,
+		Description: xmlMessage.Content,
+		Content:     message.Content,
+		FromWxid:    message.FromWxID,
+		ToWxid:      message.ToWxID,
+		Status:      0,
+		IsRead:      false,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	err = s.sysmsgRepo.Create(&systeMessage)
+	if err != nil {
+		log.Printf("入库好友添加请求通知消息失败: %v", err)
+		return
+	}
+
+	// 自动通过好友
+	go func(systemSettingsID int64) {
+		err := NewContactService(context.Background()).FriendAutoPassVerify(systemSettingsID)
+		if err != nil {
+			log.Printf("自动通过好友验证失败: %v", err)
+		}
+	}(systeMessage.ID)
+
+	if message.ID > 0 {
+		// 消息已经没什么用了，删除掉
+		err := s.msgRepo.Delete(message)
+		if err != nil {
+			log.Printf("删除消息失败: %v", err)
+			return
+		}
+	}
+}
+
+// ProcessRecalledMessage 处理撤回消息
+func (s *MessageService) ProcessRecalledMessage(message *model.Message, msgXml robot.SystemMessage) {
+	oldMsg, err := s.msgRepo.GetByMsgID(msgXml.RevokeMsg.NewMsgID)
+	if err != nil {
+		log.Printf("获取撤回的消息失败: %v", err)
+		return
+	}
+	if oldMsg != nil {
+		oldMsg.IsRecalled = true
+		err = s.msgRepo.Update(oldMsg)
+		if err != nil {
+			log.Printf("标记撤回消息失败: %v", err)
+		} else {
+			if message.ID > 0 {
+				// 消息已经没什么用了，删除掉
+				err := s.msgRepo.Delete(message)
+				if err != nil {
+					log.Printf("删除消息失败: %v", err)
+					return
+				}
+			}
+		}
+		return
+	}
+}
+
+// ProcessPatMessage 处理拍一拍消息
+func (s *MessageService) ProcessPatMessage(message *model.Message, msgXml robot.SystemMessage, msgSettings settings.Settings) {
+	msgCtx := &plugin.MessageContext{
+		Context:        s.ctx,
+		Settings:       msgSettings,
+		Message:        message,
+		MessageContent: message.Content,
+		Pat:            message.IsChatRoom && msgXml.Pat.PattedUsername == vars.RobotRuntime.WxID,
+		MessageService: s,
+	}
+	for _, messagePlugin := range vars.MessagePlugin.Plugins {
+		if slices.Contains(messagePlugin.GetLabels(), "pat") {
+			match := messagePlugin.Match(msgCtx)
+			if !match {
+				continue
+			}
+			s.logPluginMatch(messagePlugin, msgCtx)
+			messagePlugin.Run(msgCtx)
+		}
+	}
+}
+
+func (s *MessageService) ProcessNewChatRoomMemberMessage(message *model.Message, msgXml robot.SystemMessage) {
+	var newMemberWechatIds []string
+	if len(msgXml.SysMsgTemplate.ContentTemplate.LinkList.Links) > 0 {
+		links := msgXml.SysMsgTemplate.ContentTemplate.LinkList.Links
+		for _, link := range links {
+			if link.Name == "names" || link.Name == "adder" {
+				if link.MemberList != nil {
+					for _, member := range link.MemberList.Members {
+						newMemberWechatIds = append(newMemberWechatIds, member.Username)
+					}
+				}
+			}
+		}
+	}
+	newMembers, err := NewChatRoomService(s.ctx).UpdateChatRoomMembersOnNewMemberJoinIn(message.FromWxID, newMemberWechatIds)
+	if err != nil {
+		log.Printf("邀请新成员加入群聊时，更新群成员失败: %v", err)
+	}
+	if len(newMembers) == 0 {
+		log.Println("根据新成员微信ID获取群成员信息失败，没查询到有效的成员信息")
+	}
+	welcomeConfig, err := NewChatRoomSettingsService(s.ctx).GetChatRoomWelcomeConfig(message.FromWxID)
+	if err != nil {
+		log.Printf("获取群聊欢迎配置失败: %v", err)
+		return
+	}
+	if welcomeConfig.WelcomeEnabled != nil && !*welcomeConfig.WelcomeEnabled {
+		log.Printf("[%s]群聊欢迎消息未启用", message.FromWxID)
+		return
+	}
+	if welcomeConfig.WelcomeType == model.WelcomeTypeText {
+		s.SendTextMessage(message.FromWxID, welcomeConfig.WelcomeText)
+	}
+	if welcomeConfig.WelcomeType == model.WelcomeTypeEmoji {
+		s.SendEmoji(message.FromWxID, welcomeConfig.WelcomeEmojiMD5, int32(welcomeConfig.WelcomeEmojiLen))
+	}
+	if welcomeConfig.WelcomeType == model.WelcomeTypeImage {
+		resp, err := resty.New().R().SetDoNotParseResponse(true).Get(welcomeConfig.WelcomeImageURL)
+		if err != nil {
+			log.Println("获取欢迎图片失败: ", err)
+			return
+		}
+		defer resp.RawBody().Close()
+		// 创建临时文件
+		tempFile, err := os.CreateTemp("", "welcome_image_*")
+		if err != nil {
+			log.Println("创建临时文件失败: ", err)
+			return
+		}
+		defer tempFile.Close()
+		defer os.Remove(tempFile.Name()) // 清理临时文件
+		// 将图片数据写入临时文件
+		_, err = io.Copy(tempFile, resp.RawBody())
+		if err != nil {
+			log.Println("将图片数据写入临时文件失败: ", err)
+			return
+		}
+		_, err = s.MsgUploadImg(message.FromWxID, tempFile)
+		if err != nil {
+			log.Println("发送欢迎图片消息失败: ", err)
+			return
+		}
+	}
+	if welcomeConfig.WelcomeType == model.WelcomeTypeURL {
+		if len(newMembers) == 0 {
+			return
+		}
+		var title string
+		if len(newMembers) > 1 {
+			title = fmt.Sprintf("欢迎%d位家人加入群聊", len(newMembers))
+		} else if newMembers[0].Nickname != "" {
+			title = fmt.Sprintf("欢迎%s加入群聊", newMembers[0].Nickname)
+		} else {
+			title = "欢迎新成员加入群聊"
+		}
+		err := s.ShareLink(message.FromWxID, robot.ShareLinkMessage{
+			Title:    title,
+			Des:      welcomeConfig.WelcomeText,
+			Url:      welcomeConfig.WelcomeURL,
+			ThumbUrl: robot.CDATAString(newMembers[0].Avatar),
+		})
+		if err != nil {
+			log.Println("发送欢迎链接消息失败: ", err)
+		}
+	}
+}
+
+// ProcessSystemMessage 处理系统消息
+func (s *MessageService) ProcessSystemMessage(message *model.Message, msgSettings settings.Settings) {
+	var msgXml robot.SystemMessage
+	err := vars.RobotRuntime.XmlDecoder(message.Content, &msgXml)
+	if err != nil {
+		return
+	}
+	if msgXml.Type == "revokemsg" {
+		s.ProcessRecalledMessage(message, msgXml)
+		return
+	}
+	if msgXml.Type == "pat" {
+		s.ProcessPatMessage(message, msgXml, msgSettings)
+		return
+	}
+	if msgXml.Type == "sysmsgtemplate" &&
+		(strings.Contains(msgXml.SysMsgTemplate.ContentTemplate.Template, "加入了群聊") ||
+			strings.Contains(msgXml.SysMsgTemplate.ContentTemplate.Template, "分享的二维码加入群聊") ||
+			strings.Contains(msgXml.SysMsgTemplate.ContentTemplate.Template, "joined group chat")) {
+		s.ProcessNewChatRoomMemberMessage(message, msgXml)
+		return
+	}
+}
+
+// ProcessLocationMessage 处理位置消息
+func (s *MessageService) ProcessLocationMessage(message *model.Message) {
+
+}
+
+// ProcessPromptMessage 处理提示消息
+func (s *MessageService) ProcessPromptMessage(message *model.Message) {
+
+}
+
+func (s *MessageService) ProcessMessageSender(message *model.Message) {
+	self := vars.RobotRuntime.WxID
+	// 处理一下自己发的消息
+	// 自己发发到群聊
+	if message.FromWxID == self && strings.HasSuffix(message.ToWxID, "@chatroom") {
+		from := message.FromWxID
+		to := message.ToWxID
+		message.FromWxID = to
+		message.ToWxID = from
+	}
+	// 群聊消息
+	if strings.HasSuffix(message.FromWxID, "@chatroom") {
+		message.IsChatRoom = true
+		splitContents := strings.SplitN(message.Content, ":\n", 2)
+		if len(splitContents) > 1 {
+			message.Content = splitContents[1]
+			message.SenderWxID = splitContents[0]
+		} else {
+			// 绝对是自己发的消息! qwq
+			message.Content = splitContents[0]
+			message.SenderWxID = self
+		}
+	} else {
+		message.IsChatRoom = false
+		message.SenderWxID = message.FromWxID
+		if message.FromWxID == self {
+			message.FromWxID = message.ToWxID
+			message.ToWxID = self
+		}
+	}
+}
+
+func (s *MessageService) ProcessMessageShouldInsertToDB(message *model.Message) bool {
+	if message.Type == model.MsgTypeInit || message.Type == model.MsgTypeUnknow {
+		return false
+	}
+	if message.Type == model.MsgTypeSystem && message.SenderWxID == "weixin" {
+		return false
+	}
+	if message.Type == model.MsgTypeApp {
+		var xmlmsg robot.XmlMessage
+		if err := vars.RobotRuntime.XmlDecoder(message.Content, &xmlmsg); err != nil {
+			return true
+		}
+		message.AppMsgType = model.AppMessageType(xmlmsg.AppMsg.Type)
+		if message.AppMsgType == model.AppMsgTypeAttachUploading {
+			// 如果是上传中的应用消息，则不入库
+			return false
+		}
+	}
+	return true
+}
+
+// ProcessMentionedMeMessage 处理下艾特我的消息
+func (s *MessageService) ProcessMentionedMeMessage(message *model.Message, msgSource string) {
+	self := vars.RobotRuntime.WxID
+	// 是否艾特我的消息
+	var msgsource robot.MessageSource
+	err := vars.RobotRuntime.XmlDecoder(message.MessageSource, &msgsource)
+	if err != nil {
+		return
+	}
+	if msgsource.AtUserList != "" {
+		atMembers := strings.Split(msgsource.AtUserList, ",")
+		for _, at := range atMembers {
+			if strings.Trim(at, " ") == self {
+				message.IsAtMe = true
+				break
+			}
+		}
+	}
+}
+
+func (s *MessageService) InitSettingsByMessage(message *model.Message) (settings settings.Settings) {
+	if message.IsChatRoom {
+		settings = NewChatRoomSettingsService(s.ctx)
+	} else {
+		settings = NewFriendSettingsService(s.ctx)
+	}
+	err := settings.InitByMessage(message)
+	if err != nil {
+		log.Println("初始化设置失败: ", err)
+		return nil
+	}
+	return
+}
+
+func (s *MessageService) ProcessMessage(syncResp robot.SyncMessage) {
+	for _, message := range syncResp.AddMsgs {
+		now := time.Now().Unix()
+		m := model.Message{
+			MsgId:              message.NewMsgId,
+			ClientMsgId:        message.MsgId,
+			Type:               message.MsgType,
+			Content:            *message.Content.String,
+			DisplayFullContent: message.PushContent,
+			MessageSource:      message.MsgSource,
+			FromWxID:           *message.FromUserName.String,
+			ToWxID:             *message.ToUserName.String,
+			CreatedAt:          message.CreateTime,
+			UpdatedAt:          now,
+		}
+		s.ProcessMessageSender(&m)
+		if !s.ProcessMessageShouldInsertToDB(&m) {
+			continue
+		}
+		s.ProcessMentionedMeMessage(&m, message.MsgSource)
+		settings := s.InitSettingsByMessage(&m)
+		if settings == nil {
+			continue
+		}
+		err := s.msgRepo.Create(&m)
+		if err != nil {
+			log.Printf("入库消息失败: %v", err)
+			continue
+		}
+		if m.Type == model.MsgTypeText && vars.MemoryService != nil {
+			go vars.MemoryService.NotifyMessage(context.Background(), &m)
+		}
+		if message.CreateTime < now-600 {
+			// 消息太旧了，不处理了
+			continue
+		}
+		switch m.Type {
+		case model.MsgTypeText:
+			go s.ProcessTextMessage(&m, settings)
+		case model.MsgTypeImage:
+			go s.ProcessImageMessage(&m, settings)
+		case model.MsgTypeVoice:
+			go s.ProcessVoiceMessage(&m)
+		case model.MsgTypeVideo:
+			go s.ProcessVideoMessage(&m)
+		case model.MsgTypeEmoticon:
+			go s.ProcessEmojiMessage(&m)
+		case model.MsgTypeApp:
+			go s.ProcessAppMessage(&m, settings)
+		case model.MsgTypeShareCard:
+			go s.ProcessShareCardMessage(&m)
+		case model.MsgTypeVerify:
+			// 好友添加请求通知消息
+			go s.ProcessFriendVerifyMessage(&m)
+		case model.MsgTypeSystem:
+			go s.ProcessSystemMessage(&m, settings)
+		case model.MsgTypeLocation:
+			go s.ProcessLocationMessage(&m)
+		case model.MsgTypePrompt:
+			go s.ProcessPromptMessage(&m)
+		default:
+			// 未知消息类型
+			log.Printf("未知消息类型: %d, 内容: %s", m.Type, m.Content)
+		}
+		go func() {
+			// 插入一条联系人记录，获取联系人列表接口获取不到未保存到通讯录的群聊
+			NewContactService(s.ctx).InsertOrUpdateContactActiveTime(m.FromWxID)
+			if strings.HasSuffix(m.FromWxID, "@chatroom") {
+				NewChatRoomService(s.ctx).UpsertChatRoomMember(&model.ChatRoomMember{
+					ChatRoomID: m.FromWxID,
+					WechatID:   m.SenderWxID,
+				})
+			}
+		}()
+	}
+	for _, contact := range syncResp.ModContacts {
+		if contact.UserName.String != nil {
+			if strings.HasSuffix(*contact.UserName.String, "@chatroom") {
+				// 群成员信息有变化，更新群聊成员（防抖，5 秒内只执行最后一次）
+				NewChatRoomService(context.Background()).DebounceSyncChatRoomMember(*contact.UserName.String)
+			} else {
+				// 更新联系人信息
+				NewContactService(context.Background()).DebounceSyncContact(*contact.UserName.String)
+			}
+		}
+	}
+	for _, contact := range syncResp.DelContacts {
+		if contact.UserName.String != nil {
+			err := NewContactService(context.Background()).DeleteContactByContactID(*contact.UserName.String)
+			if err != nil {
+				log.Println("删除联系人失败: ", err)
+			}
+		}
+	}
+	// webhook 回调
+	s.MessageWebhook(syncResp)
+}
+
+func (s *MessageService) MessageWebhook(syncResp robot.SyncMessage) {
+	if vars.Webhook.URL != "" {
+		req := resty.New().R().
+			SetHeader("Content-Type", "application/json;chartset=utf-8").
+			SetBody(syncResp)
+
+		// 设置自定义 headers
+		if vars.Webhook.Headers != nil {
+			for k, v := range vars.Webhook.Headers {
+				switch val := v.(type) {
+				case string:
+					// 单个字符串值
+					req.SetHeader(k, val)
+				case []string:
+					// 字符串数组,设置多个相同 key 的 header
+					for _, headerVal := range val {
+						req.SetHeader(k, headerVal)
+					}
+				case []any:
+					// any 数组,尝试转换为字符串
+					for _, item := range val {
+						if strVal, ok := item.(string); ok {
+							req.SetHeader(k, strVal)
+						}
+					}
+				}
+			}
+		}
+
+		webhookUrl := vars.Webhook.URL
+		if strings.Contains(webhookUrl, "?") {
+			webhookUrl += fmt.Sprintf("&robot_id=%d&robot_code=%s&robot_wxid=%s", vars.RobotRuntime.RobotID, vars.RobotRuntime.RobotCode, vars.RobotRuntime.WxID)
+		} else {
+			webhookUrl += fmt.Sprintf("?robot_id=%d&robot_code=%s&robot_wxid=%s", vars.RobotRuntime.RobotID, vars.RobotRuntime.RobotCode, vars.RobotRuntime.WxID)
+		}
+		_, err := req.Post(webhookUrl)
+		if err != nil {
+			log.Println("消息 webhook 调用失败: ", err.Error())
+		}
+	}
+}
+
+func (s *MessageService) SyncMessage() {
+	// 获取新消息
+	syncResp, err := vars.RobotRuntime.SyncMessage()
+	if err != nil {
+		// 有可能是用户退出了，或者掉线了，这里不处理，由心跳机制处理机器人在线/离线状态
+		log.Println("获取新消息失败: ", err)
+		return
+	}
+	if len(syncResp.AddMsgs) == 0 {
+		// 没有消息，直接返回
+		return
+	}
+	s.ProcessMessage(syncResp)
+}
+
+func (s *MessageService) XmlDecoder(content string) (robot.XmlMessage, error) {
+	var xmlMessage robot.XmlMessage
+	err := vars.RobotRuntime.XmlDecoder(content, &xmlMessage)
+	if err != nil {
+		return xmlMessage, err
+	}
+	return xmlMessage, nil
+}
+
+func (s *MessageService) MessageRevoke(req dto.MessageCommonRequest) error {
+	message, err := s.msgRepo.GetByID(req.MessageID)
+	if err != nil {
+		return fmt.Errorf("获取消息失败: %w", err)
+	}
+	if message == nil {
+		return errors.New("消息不存在")
+	}
+	// 两分钟前
+	if message.CreatedAt+120 < time.Now().Unix() {
+		return errors.New("消息已过期")
+	}
+	return vars.RobotRuntime.MessageRevoke(*message)
+}
+
+func (s *MessageService) SendTextMessage(toWxID, content string, at ...string) error {
+	atContent := ""
+	if len(at) > 0 {
+		// 手动拼接上 @ 符号和昵称
+		for index, wxid := range at {
+			var targetNickname string
+
+			if strings.HasSuffix(toWxID, "@chatroom") {
+				// 群聊消息，昵称优先取群备注，备注取不到或者取失败了，再去取联系人的昵称
+				chatRoomMember, err := s.crmRepo.GetChatRoomMember(toWxID, wxid)
+				if err != nil || chatRoomMember == nil {
+					r, err := vars.RobotRuntime.GetContactDetail("", []string{wxid})
+					if err != nil || len(r.ContactList) == 0 {
+						continue
+					}
+					if r.ContactList[0].NickName.String == nil {
+						continue
+					}
+					targetNickname = *r.ContactList[0].NickName.String
+				} else {
+					if chatRoomMember.Remark != "" {
+						targetNickname = chatRoomMember.Remark
+					} else {
+						targetNickname = chatRoomMember.Nickname
+					}
+				}
+			} else {
+				// 私聊消息
+				r, err := vars.RobotRuntime.GetContactDetail("", []string{wxid})
+				if err != nil || len(r.ContactList) == 0 {
+					continue
+				}
+				if r.ContactList[0].NickName.String == nil {
+					continue
+				}
+				targetNickname = *r.ContactList[0].NickName.String
+			}
+
+			if targetNickname == "" {
+				continue
+			}
+			if index > 0 {
+				atContent += " "
+			}
+			atContent += fmt.Sprintf("@%s%s", targetNickname, "\u2005")
+		}
+	}
+	content = atContent + content
+	newMessages, err := vars.RobotRuntime.SendTextMessage(toWxID, content, at...)
+	if err != nil {
+		return err
+	}
+
+	// 通过机器人发送的消息，消息同步接口获取不到，所以这里需要手动入库
+	if len(newMessages.List) > 0 {
+		for _, message := range newMessages.List {
+			if message.Ret == 0 {
+				m := model.Message{
+					MsgId:              message.NewMsgId,
+					ClientMsgId:        message.ClientMsgid,
+					Type:               model.MsgTypeText,
+					Content:            content,
+					DisplayFullContent: "",
+					MessageSource:      "",
+					FromWxID:           toWxID,
+					ToWxID:             vars.RobotRuntime.WxID,
+					SenderWxID:         vars.RobotRuntime.WxID,
+					IsChatRoom:         strings.HasSuffix(toWxID, "@chatroom"),
+					CreatedAt:          message.Createtime,
+					UpdatedAt:          time.Now().Unix(),
+				}
+				if m.IsChatRoom && len(at) > 0 {
+					m.ReplyWxID = at[0]
+				}
+				err = s.msgRepo.Create(&m)
+				if err != nil {
+					log.Printf("入库消息失败: %v", err)
+				}
+				// 插入一条联系人记录，获取联系人列表接口获取不到未保存到通讯录的群聊
+				NewContactService(s.ctx).InsertOrUpdateContactActiveTime(m.FromWxID)
+			}
+		}
+	}
+
+	return nil
+}
+
+func (s *MessageService) ToolsCompleted(toWxID, replyWxID string) error {
+	now := time.Now()
+	m := model.Message{
+		MsgId:              now.UnixNano() + rand.Int63n(1000),
+		ClientMsgId:        now.Unix(),
+		Type:               model.MsgTypeText,
+		Content:            "成功完成工具调用",
+		DisplayFullContent: "",
+		MessageSource:      "",
+		FromWxID:           toWxID,
+		ToWxID:             vars.RobotRuntime.WxID,
+		SenderWxID:         vars.RobotRuntime.WxID,
+		ReplyWxID:          replyWxID,
+		IsChatRoom:         strings.HasSuffix(toWxID, "@chatroom"),
+		CreatedAt:          now.Unix(),
+		UpdatedAt:          now.Unix(),
+	}
+	return s.msgRepo.Create(&m)
+}
+
+// SendGroupMassMsgText 文本消息群发接口
+func (s *MessageService) SendGroupMassMsgText(toWxID []string, content string) error {
+	_, err := vars.RobotRuntime.MsgSendGroupMassMsgText(robot.MsgSendGroupMassMsgTextRequest{
+		ToWxid:  toWxID,
+		Content: content,
+	})
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *MessageService) SendAppMessage(toWxID string, appMsgType int, appMsgXml string) error {
+	message, err := vars.RobotRuntime.SendAppMessage(toWxID, appMsgType, appMsgXml)
+	if err != nil {
+		return err
+	}
+
+	m := model.Message{
+		MsgId:              message.NewMsgId,
+		ClientMsgId:        message.MsgId,
+		Type:               model.MsgTypeApp,
+		AppMsgType:         model.AppMessageType(appMsgType),
+		Content:            message.Content,
+		DisplayFullContent: "",
+		MessageSource:      message.MsgSource,
+		FromWxID:           toWxID,
+		ToWxID:             vars.RobotRuntime.WxID,
+		SenderWxID:         vars.RobotRuntime.WxID,
+		IsChatRoom:         strings.HasSuffix(toWxID, "@chatroom"),
+		CreatedAt:          message.CreateTime,
+		UpdatedAt:          time.Now().Unix(),
+	}
+	err = s.msgRepo.Create(&m)
+	if err != nil {
+		log.Println("入库消息失败: ", err)
+	}
+	// 插入一条联系人记录，获取联系人列表接口获取不到未保存到通讯录的群聊
+	NewContactService(s.ctx).InsertOrUpdateContactActiveTime(m.FromWxID)
+
+	return nil
+}
+
+// 发送图片信息
+func (s *MessageService) MsgUploadImg(toWxID string, image io.Reader) (*model.Message, error) {
+	imageBytes, err := io.ReadAll(image)
+	if err != nil {
+		return nil, fmt.Errorf("读取文件内容失败: %w", err)
+	}
+	message, err := vars.RobotRuntime.MsgUploadImg(toWxID, imageBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	m := model.Message{
+		MsgId:              message.Newmsgid,
+		ClientMsgId:        message.Msgid,
+		Type:               model.MsgTypeImage,
+		Content:            "", // 获取不到图片的 xml 内容
+		DisplayFullContent: "",
+		MessageSource:      message.MsgSource,
+		FromWxID:           toWxID,
+		ToWxID:             vars.RobotRuntime.WxID,
+		SenderWxID:         vars.RobotRuntime.WxID,
+		IsChatRoom:         strings.HasSuffix(toWxID, "@chatroom"),
+		CreatedAt:          message.CreateTime,
+		UpdatedAt:          time.Now().Unix(),
+	}
+	err = s.msgRepo.Create(&m)
+	if err != nil {
+		log.Println("入库消息失败: ", err)
+	}
+	// 插入一条联系人记录，获取联系人列表接口获取不到未保存到通讯录的群聊
+	NewContactService(s.ctx).InsertOrUpdateContactActiveTime(m.FromWxID)
+
+	return &m, nil
+}
+
+// SendImageMessageByRemoteURL 根据远程URL发送图片（优先使用分片下载，不支持则回退到普通下载）
+func (s *MessageService) SendImageMessageByRemoteURL(toWxID string, imageURL string) error {
+	// 使用 Range 请求第一个字节来探测是否支持分片下载
+	rangeHeader := "bytes=0-0"
+	testResp, err := resty.New().R().
+		SetHeader("Range", rangeHeader).
+		SetDoNotParseResponse(true).
+		Get(imageURL)
+	if err != nil {
+		return fmt.Errorf("获取图片信息失败: %w", err)
+	}
+	testResp.RawBody().Close()
+
+	if testResp.StatusCode() != 206 && testResp.StatusCode() != 200 {
+		log.Printf("获取图片信息失败，HTTP状态码: %d\n", testResp.StatusCode())
+		return fmt.Errorf("获取图片信息失败，HTTP状态码: %d", testResp.StatusCode())
+	}
+
+	// 如果返回 206，说明支持 Range 请求
+	supportsRange := testResp.StatusCode() == 206
+
+	if !supportsRange {
+		log.Println("服务器不支持 Range 请求，使用普通下载方式")
+		return s.sendImageByNormalDownload(toWxID, imageURL)
+	}
+
+	// 从 Content-Range 获取文件总大小
+	contentLength := testResp.RawResponse.ContentLength
+	contentRange := testResp.Header().Get("Content-Range")
+	if contentRange != "" {
+		// Content-Range 格式: bytes 0-0/总大小
+		parts := strings.Split(contentRange, "/")
+		if len(parts) == 2 {
+			total, err := strconv.ParseInt(parts[1], 10, 64)
+			if err == nil {
+				contentLength = total
+			}
+		}
+	}
+
+	if contentLength <= 1 {
+		log.Println("无法获取图片大小，使用普通下载方式")
+		return s.sendImageByNormalDownload(toWxID, imageURL)
+	}
+
+	// 生成唯一的客户端图片ID
+	clientImgId := fmt.Sprintf("%v_%v", vars.RobotRuntime.WxID, time.Now().UnixNano())
+
+	// 计算分片数量
+	chunkSize := vars.UploadImageChunkSize
+	totalChunks := (contentLength + chunkSize - 1) / chunkSize
+
+	// 分片下载并上传
+	for chunkIndex := range totalChunks {
+		start := int64(chunkIndex) * chunkSize
+		end := start + chunkSize - 1
+		if end >= contentLength {
+			end = contentLength - 1
+		}
+
+		// 使用 Range 请求下载分片
+		rangeHeader := fmt.Sprintf("bytes=%d-%d", start, end)
+		resp, err := resty.New().R().
+			SetHeader("Range", rangeHeader).
+			SetDoNotParseResponse(true).
+			Get(imageURL)
+		if err != nil {
+			return fmt.Errorf("下载图片分片失败 (chunk %d/%d): %w", chunkIndex+1, totalChunks, err)
+		}
+
+		// 如果第一个分片就不支持 Range，回退到普通下载
+		if chunkIndex == 0 && resp.StatusCode() != 206 && resp.StatusCode() != 200 {
+			resp.RawBody().Close()
+			log.Printf("Range 请求返回状态码 %d，回退到普通下载方式", resp.StatusCode())
+			return s.sendImageByNormalDownload(toWxID, imageURL)
+		}
+
+		if resp.StatusCode() != 206 && resp.StatusCode() != 200 {
+			resp.RawBody().Close()
+			return fmt.Errorf("下载图片分片失败，HTTP状态码: %d (chunk %d/%d)", resp.StatusCode(), chunkIndex+1, totalChunks)
+		}
+
+		// 读取分片数据
+		chunkData, err := io.ReadAll(resp.RawBody())
+		resp.RawBody().Close()
+		if err != nil {
+			return fmt.Errorf("读取分片数据失败 (chunk %d/%d): %w", chunkIndex+1, totalChunks, err)
+		}
+
+		// 创建分片请求
+		req := dto.SendImageMessageRequest{
+			ToWxid:      toWxID,
+			ClientImgId: clientImgId,
+			FileSize:    contentLength,
+			ChunkIndex:  int64(chunkIndex),
+			TotalChunks: totalChunks,
+			ImageURL:    imageURL,
+		}
+
+		// 创建分片 reader
+		chunkReader := io.NopCloser(strings.NewReader(string(chunkData)))
+		chunkHeader := &multipart.FileHeader{
+			Filename: fmt.Sprintf("chunk_%d", chunkIndex),
+			Size:     int64(len(chunkData)),
+		}
+
+		// 发送分片
+		_, err = s.SendImageMessageStream(s.ctx, req, chunkReader, chunkHeader)
+		if err != nil {
+			return fmt.Errorf("发送图片分片失败 (chunk %d/%d): %w", chunkIndex+1, totalChunks, err)
+		}
+	}
+
+	return nil
+}
+
+// sendImageByNormalDownload 普通下载方式（一次性下载，分片上传）
+func (s *MessageService) sendImageByNormalDownload(toWxID string, imageURL string) error {
+	resp, err := resty.New().R().SetDoNotParseResponse(true).Get(imageURL)
+	if err != nil {
+		return fmt.Errorf("下载图片失败: %w", err)
+	}
+	defer resp.RawBody().Close()
+
+	if resp.StatusCode() != 200 {
+		return fmt.Errorf("下载图片失败，HTTP状态码: %d", resp.StatusCode())
+	}
+
+	// 读取整个图片到内存
+	imageData, err := io.ReadAll(resp.RawBody())
+	if err != nil {
+		return fmt.Errorf("读取图片数据失败: %w", err)
+	}
+
+	contentLength := int64(len(imageData))
+	if contentLength == 0 {
+		return fmt.Errorf("图片数据为空")
+	}
+
+	// 生成唯一的客户端图片ID
+	clientImgId := fmt.Sprintf("%v_%v", vars.RobotRuntime.WxID, time.Now().UnixNano())
+
+	// 计算分片数量
+	chunkSize := vars.UploadImageChunkSize
+	totalChunks := (contentLength + chunkSize - 1) / chunkSize
+
+	// 分片上传
+	for chunkIndex := range totalChunks {
+		start := int64(chunkIndex) * chunkSize
+		end := start + chunkSize
+		if end > contentLength {
+			end = contentLength
+		}
+
+		// 提取当前分片数据
+		chunkData := imageData[start:end]
+
+		// 创建分片请求
+		req := dto.SendImageMessageRequest{
+			ToWxid:      toWxID,
+			ClientImgId: clientImgId,
+			FileSize:    contentLength,
+			ChunkIndex:  int64(chunkIndex),
+			TotalChunks: totalChunks,
+			ImageURL:    imageURL,
+		}
+
+		// 创建分片 reader
+		chunkReader := io.NopCloser(strings.NewReader(string(chunkData)))
+		chunkHeader := &multipart.FileHeader{
+			Filename: fmt.Sprintf("chunk_%d", chunkIndex),
+			Size:     int64(len(chunkData)),
+		}
+
+		// 发送分片
+		_, err = s.SendImageMessageStream(s.ctx, req, chunkReader, chunkHeader)
+		if err != nil {
+			return fmt.Errorf("发送图片分片失败 (chunk %d/%d): %w", chunkIndex+1, totalChunks, err)
+		}
+	}
+
+	return nil
+}
+
+// 分片发送图片信息
+func (s *MessageService) SendImageMessageStream(ctx context.Context, req dto.SendImageMessageRequest, file io.Reader, fileHeader *multipart.FileHeader) (*model.Message, error) {
+	message, err := vars.RobotRuntime.SendImageMessageStream(robot.SendImageMessageStreamRequest{
+		ToWxid:      req.ToWxid,
+		ClientImgId: req.ClientImgId,
+		TotalLen:    req.FileSize,
+		StartPos:    req.ChunkIndex * vars.UploadImageChunkSize,
+	}, file, fileHeader)
+	if err != nil {
+		return nil, err
+	}
+	// 图片还没上传完
+	if message == nil {
+		return nil, nil
+	}
+
+	m := model.Message{
+		MsgId:              message.Newmsgid,
+		ClientMsgId:        message.Msgid,
+		Type:               model.MsgTypeImage,
+		Content:            "", // 获取不到图片的 xml 内容
+		DisplayFullContent: "",
+		MessageSource:      message.MsgSource,
+		FromWxID:           req.ToWxid,
+		ToWxID:             vars.RobotRuntime.WxID,
+		SenderWxID:         vars.RobotRuntime.WxID,
+		IsChatRoom:         strings.HasSuffix(req.ToWxid, "@chatroom"),
+		AttachmentUrl:      req.ImageURL,
+		CreatedAt:          message.CreateTime,
+		UpdatedAt:          time.Now().Unix(),
+	}
+	err = s.msgRepo.Create(&m)
+	if err != nil {
+		log.Println("入库消息失败: ", err)
+	}
+	// 插入一条联系人记录，获取联系人列表接口获取不到未保存到通讯录的群聊
+	NewContactService(s.ctx).InsertOrUpdateContactActiveTime(m.FromWxID)
+
+	return &m, nil
+}
+
+func (s *MessageService) SendImageMessageByLocalPath(toWxID string, imagePath string) error {
+	_, _, err := s.ValidateLocalFileForSend(imagePath, map[string]bool{
+		".jpg":  true,
+		".jpeg": true,
+		".png":  true,
+		".gif":  true,
+		".webp": true,
+	}, 0, "图片")
+	if err != nil {
+		return err
+	}
+
+	clientImgId := fmt.Sprintf("%v_%v", vars.RobotRuntime.WxID, time.Now().UnixNano())
+	return s.StreamLocalFileChunks(imagePath, vars.UploadImageChunkSize, func(chunkIndex, totalChunks, totalSize int64, chunkReader io.Reader, fileHeader *multipart.FileHeader) error {
+		_, err := s.SendImageMessageStream(s.ctx, dto.SendImageMessageRequest{
+			ToWxid:      toWxID,
+			ClientImgId: clientImgId,
+			FileSize:    totalSize,
+			ChunkIndex:  chunkIndex,
+			TotalChunks: totalChunks,
+		}, chunkReader, fileHeader)
+		if err != nil {
+			return fmt.Errorf("发送图片分片失败 (chunk %d/%d): %w", chunkIndex+1, totalChunks, err)
+		}
+		return nil
+	})
+}
+
+func (s *MessageService) MsgSendVideo(toWxID string, video io.Reader, videoExt string) error {
+	videoBytes, err := io.ReadAll(video)
+	if err != nil {
+		return fmt.Errorf("读取文件内容失败: %w", err)
+	}
+	_, err = vars.RobotRuntime.MsgSendVideo(toWxID, videoBytes, videoExt)
+	if err != nil {
+		return err
+	}
+
+	msgid := time.Now().UnixNano()
+	m := model.Message{
+		MsgId:              msgid,
+		ClientMsgId:        msgid,
+		Type:               model.MsgTypeVideo,
+		Content:            "", // 获取不到视频的 xml 内容
+		DisplayFullContent: "",
+		MessageSource:      "",
+		FromWxID:           toWxID,
+		ToWxID:             vars.RobotRuntime.WxID,
+		SenderWxID:         vars.RobotRuntime.WxID,
+		IsChatRoom:         strings.HasSuffix(toWxID, "@chatroom"),
+		CreatedAt:          time.Now().Unix(),
+		UpdatedAt:          time.Now().Unix(),
+	}
+	err = s.msgRepo.Create(&m)
+	if err != nil {
+		log.Println("入库消息失败: ", err)
+	}
+	// 插入一条联系人记录，获取联系人列表接口获取不到未保存到通讯录的群聊
+	NewContactService(s.ctx).InsertOrUpdateContactActiveTime(m.FromWxID)
+
+	return nil
+}
+
+func (s *MessageService) SendVideoMessageByLocalPath(toWxID string, videoPath string) error {
+	_, _, err := s.ValidateLocalFileForSend(videoPath, map[string]bool{
+		".mp4":  true,
+		".avi":  true,
+		".mov":  true,
+		".mkv":  true,
+		".flv":  true,
+		".webm": true,
+	}, 0, "视频")
+	if err != nil {
+		return err
+	}
+
+	message, err := vars.RobotRuntime.MsgSendVideoFromLocal(toWxID, videoPath)
+	if err != nil {
+		return err
+	}
+	if message == nil {
+		return errors.New("发送视频失败，获取视频结果为空")
+	}
+
+	m := model.Message{
+		MsgId:              message.NewMsgId,
+		ClientMsgId:        message.Msgid,
+		Type:               model.MsgTypeVideo,
+		Content:            "",
+		DisplayFullContent: "",
+		MessageSource:      "",
+		FromWxID:           toWxID,
+		ToWxID:             vars.RobotRuntime.WxID,
+		SenderWxID:         vars.RobotRuntime.WxID,
+		IsChatRoom:         strings.HasSuffix(toWxID, "@chatroom"),
+		CreatedAt:          time.Now().Unix(),
+		UpdatedAt:          time.Now().Unix(),
+	}
+	err = s.msgRepo.Create(&m)
+	if err != nil {
+		log.Println("入库消息失败: ", err)
+	}
+	NewContactService(s.ctx).InsertOrUpdateContactActiveTime(m.FromWxID)
+
+	return nil
+}
+
+func (s *MessageService) SendVideoMessageByRemoteURL(toWxID string, videoURL string) error {
+	tempFile, err := os.CreateTemp("", "video_*")
+	if err != nil {
+		return fmt.Errorf("创建临时文件失败: %w", err)
+	}
+	tempFilePath := tempFile.Name()
+	defer os.Remove(tempFilePath)
+
+	// 尝试分片下载
+	chunkSize := int64(1024 * 1024)
+	// 先尝试请求第一个分片，检测是否支持 Range
+	rangeHeader := fmt.Sprintf("bytes=0-%d", chunkSize-1)
+	resp, err := resty.New().R().
+		SetHeader("Range", rangeHeader).
+		SetDoNotParseResponse(true).
+		Get(videoURL)
+	if err != nil {
+		tempFile.Close()
+		return fmt.Errorf("下载视频失败: %w", err)
+	}
+
+	// 如果返回 206，说明支持分片下载
+	if resp.StatusCode() == 206 {
+		log.Println("服务器支持 Range 请求，使用分片下载")
+		// 获取文件总大小
+		contentLength := resp.RawResponse.ContentLength
+		contentRange := resp.Header().Get("Content-Range")
+		if contentRange != "" {
+			// Content-Range 格式: bytes 0-1048575/总大小
+			parts := strings.Split(contentRange, "/")
+			if len(parts) == 2 {
+				total, err := strconv.ParseInt(parts[1], 10, 64)
+				if err == nil {
+					contentLength = total
+				}
+			}
+		}
+
+		if contentLength > maxFileSize {
+			resp.RawBody().Close()
+			tempFile.Close()
+			return fmt.Errorf("视频大小 %dMB 超过限制 %dMB，取消下载", contentLength/(1024*1024), maxFileSize/(1024*1024))
+		}
+
+		// 写入第一个分片
+		_, err = io.Copy(tempFile, resp.RawBody())
+		resp.RawBody().Close()
+		if err != nil {
+			tempFile.Close()
+			return fmt.Errorf("写入第一个分片失败: %w", err)
+		}
+
+		// 下载剩余分片
+		for start := chunkSize; start < contentLength; start += chunkSize {
+			end := start + chunkSize - 1
+			if end >= contentLength {
+				end = contentLength - 1
+			}
+
+			rangeHeader := fmt.Sprintf("bytes=%d-%d", start, end)
+			chunkResp, err := resty.New().R().
+				SetHeader("Range", rangeHeader).
+				SetDoNotParseResponse(true).
+				Get(videoURL)
+			if err != nil {
+				tempFile.Close()
+				return fmt.Errorf("下载视频分片失败 (bytes %d-%d): %w", start, end, err)
+			}
+
+			if chunkResp.StatusCode() != 206 && chunkResp.StatusCode() != 200 {
+				chunkResp.RawBody().Close()
+				tempFile.Close()
+				return fmt.Errorf("下载视频分片失败，HTTP状态码: %d (bytes %d-%d)", chunkResp.StatusCode(), start, end)
+			}
+
+			_, err = io.Copy(tempFile, chunkResp.RawBody())
+			chunkResp.RawBody().Close()
+			if err != nil {
+				tempFile.Close()
+				return fmt.Errorf("写入视频分片失败 (bytes %d-%d): %w", start, end, err)
+			}
+		}
+	} else if resp.StatusCode() == 200 {
+		log.Println("服务器不支持 Range 请求，使用普通下载方式")
+		if contentLen := resp.RawResponse.ContentLength; contentLen > maxFileSize {
+			resp.RawBody().Close()
+			tempFile.Close()
+			return fmt.Errorf("视频大小 %dMB 超过限制 %dMB，取消下载", contentLen/(1024*1024), maxFileSize/(1024*1024))
+		}
+		n, err := io.Copy(tempFile, io.LimitReader(resp.RawBody(), maxFileSize+1))
+		resp.RawBody().Close()
+		if err != nil {
+			tempFile.Close()
+			return fmt.Errorf("写入视频数据失败: %w", err)
+		}
+		if n > maxFileSize {
+			tempFile.Close()
+			return fmt.Errorf("视频大小超过限制 %dMB，取消下载", maxFileSize/(1024*1024))
+		}
+	} else {
+		resp.RawBody().Close()
+		tempFile.Close()
+		return fmt.Errorf("下载视频失败，HTTP状态码: %d", resp.StatusCode())
+	}
+
+	tempFile.Close()
+
+	message, err := vars.RobotRuntime.MsgSendVideoFromLocal(toWxID, tempFilePath)
+	if err != nil {
+		return err
+	}
+	if message == nil {
+		return errors.New("发送视频失败，获取视频结果为空")
+	}
+
+	m := model.Message{
+		MsgId:              message.NewMsgId,
+		ClientMsgId:        message.Msgid,
+		Type:               model.MsgTypeVideo,
+		Content:            "", // 获取不到视频的 xml 内容
+		DisplayFullContent: "",
+		MessageSource:      "",
+		FromWxID:           toWxID,
+		ToWxID:             vars.RobotRuntime.WxID,
+		SenderWxID:         vars.RobotRuntime.WxID,
+		IsChatRoom:         strings.HasSuffix(toWxID, "@chatroom"),
+		AttachmentUrl:      videoURL,
+		CreatedAt:          time.Now().Unix(),
+		UpdatedAt:          time.Now().Unix(),
+	}
+	err = s.msgRepo.Create(&m)
+	if err != nil {
+		log.Println("入库消息失败: ", err)
+	}
+	// 插入一条联系人记录，获取联系人列表接口获取不到未保存到通讯录的群聊
+	NewContactService(s.ctx).InsertOrUpdateContactActiveTime(m.FromWxID)
+
+	return nil
+}
+
+func (s *MessageService) MsgSendVoice(toWxID string, voice io.Reader, voiceExt string) error {
+	videoBytes, err := io.ReadAll(voice)
+	if err != nil {
+		return fmt.Errorf("读取文件内容失败: %w", err)
+	}
+	message, err := vars.RobotRuntime.MsgSendVoice(toWxID, videoBytes, voiceExt)
+	if err != nil {
+		return err
+	}
+
+	clientMsgId, _ := strconv.ParseInt(message.ClientMsgId, 10, 64)
+	m := model.Message{
+		MsgId:              message.NewMsgId,
+		ClientMsgId:        clientMsgId,
+		Type:               model.MsgTypeVoice,
+		Content:            "", // 获取不到音频的 xml 内容
+		DisplayFullContent: "",
+		MessageSource:      "",
+		FromWxID:           toWxID,
+		ToWxID:             vars.RobotRuntime.WxID,
+		SenderWxID:         vars.RobotRuntime.WxID,
+		IsChatRoom:         strings.HasSuffix(toWxID, "@chatroom"),
+		CreatedAt:          message.CreateTime,
+		UpdatedAt:          time.Now().Unix(),
+	}
+	err = s.msgRepo.Create(&m)
+	if err != nil {
+		log.Println("入库消息失败: ", err)
+	}
+	// 插入一条联系人记录，获取联系人列表接口获取不到未保存到通讯录的群聊
+	NewContactService(s.ctx).InsertOrUpdateContactActiveTime(m.FromWxID)
+
+	return nil
+}
+
+func (s *MessageService) SendVoiceMessageByLocalPath(toWxID string, voicePath string) error {
+	_, voiceExt, err := s.ValidateLocalFileForSend(voicePath, map[string]bool{
+		".amr": true,
+		".mp3": true,
+		".wav": true,
+	}, 50*1024*1024, "音频")
+	if err != nil {
+		return err
+	}
+
+	voiceFile, err := os.Open(voicePath)
+	if err != nil {
+		return fmt.Errorf("打开本地音频文件失败: %w", err)
+	}
+	defer voiceFile.Close()
+
+	return s.MsgSendVoice(toWxID, voiceFile, voiceExt)
+}
+
+func (s *MessageService) SendLongTextMessage(toWxID string, longText string) error {
+	currentRobot, err := s.robotAdminRepo.GetByWeChatID(vars.RobotRuntime.WxID)
+	if err != nil {
+		return err
+	}
+	if currentRobot == nil || currentRobot.Nickname == nil {
+		return fmt.Errorf("未找到机器人信息")
+	}
+
+	dataID := uuid.New().String()
+	fiveMinuteAgo := time.Now().Add(-5 * time.Minute)
+
+	recordInfo := robot.RecordInfo{
+		Info:       fmt.Sprintf("%s: %s", *currentRobot.Nickname, longText),
+		IsChatRoom: 1,
+		Desc:       fmt.Sprintf("%s: %s", *currentRobot.Nickname, longText),
+		FromScene:  3,
+		DataList: robot.DataList{
+			Count: 1,
+			Items: []robot.DataItem{
+				{
+					DataType:         1,
+					DataID:           strings.ReplaceAll(dataID, "-", ""),
+					SrcMsgLocalID:    rand.Intn(90000) + 10000,
+					SourceTime:       fiveMinuteAgo.Format("2006-1-2 15:04"),
+					FromNewMsgID:     time.Now().UnixNano() / 100,
+					SrcMsgCreateTime: fiveMinuteAgo.Unix(),
+					DataDesc:         longText,
+					DataItemSource: &robot.DataItemSource{
+						HashUsername: fmt.Sprintf("%x", sha256.Sum256([]byte(vars.RobotRuntime.WxID))),
+					},
+					SourceName:    *currentRobot.Nickname,
+					SourceHeadURL: *currentRobot.Avatar,
+				},
+			},
+		},
+	}
+
+	recordInfoBytes, err := xml.MarshalIndent(recordInfo, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	newMsg := robot.ChatHistoryMessage{
+		AppMsg: robot.ChatHistoryAppMsg{
+			AppID:  "",
+			SDKVer: "0",
+			Title:  "群聊的聊天记录",
+			Type:   19,
+			URL:    "https://support.weixin.qq.com/cgi-bin/mmsupport-bin/readtemplate?t=page/favorite_record__w_unsupport",
+			Des:    fmt.Sprintf("%s: %s", *currentRobot.Nickname, longText),
+			RecordItem: robot.ChatHistoryRecordItem{XML: fmt.Sprintf(`<![CDATA[
+%s
+]]>`, string(recordInfoBytes))},
+		},
+	}
+	message, err := vars.RobotRuntime.SendChatHistoryMessage(toWxID, newMsg)
+	if err != nil {
+		return err
+	}
+
+	m := model.Message{
+		MsgId:              message.NewMsgId,
+		ClientMsgId:        message.MsgId,
+		Type:               model.MsgTypeApp,
+		AppMsgType:         model.AppMsgTypeChatHistory,
+		Content:            message.Content,
+		DisplayFullContent: "",
+		MessageSource:      message.MsgSource,
+		FromWxID:           toWxID,
+		ToWxID:             vars.RobotRuntime.WxID,
+		SenderWxID:         vars.RobotRuntime.WxID,
+		IsChatRoom:         strings.HasSuffix(toWxID, "@chatroom"),
+		CreatedAt:          message.CreateTime,
+		UpdatedAt:          time.Now().Unix(),
+	}
+	err = s.msgRepo.Create(&m)
+	if err != nil {
+		log.Println("入库消息失败: ", err)
+	}
+	// 插入一条联系人记录，获取联系人列表接口获取不到未保存到通讯录的群聊
+	NewContactService(s.ctx).InsertOrUpdateContactActiveTime(m.FromWxID)
+
+	return nil
+}
+
+func (s *MessageService) SendMusicMessage(toWxID string, songTitle string) error {
+	var resp robot.MusicSearchResponse
+	_, err := resty.New().R().
+		SetHeader("Content-Type", "application/json").
+		SetQueryParam("msg", songTitle).
+		SetQueryParam("type", "json").
+		SetQueryParam("n", "1").
+		SetQueryParam("br", "7").
+		SetResult(&resp).
+		Get(vars.MusicSearchApi)
+	if err != nil {
+		return fmt.Errorf("获取歌曲信息失败: %w", err)
+	}
+	result := resp.Data
+	if result.Title == nil {
+		return fmt.Errorf("没有搜索到歌曲 %s", songTitle)
+	}
+
+	songInfo := robot.SongInfo{}
+	songInfo.FromUsername = vars.RobotRuntime.WxID
+	songInfo.AppID = "wx8dd6ecd81906fd84"
+	songInfo.Title = *result.Title
+	songInfo.Singer = result.Singer
+	songInfo.Url = result.Link
+	songInfo.MusicUrl = result.MusicURL
+	if result.Cover != nil {
+		songInfo.CoverUrl = *result.Cover
+	}
+	if result.Lrc != nil {
+		songInfo.Lyric = *result.Lrc
+	}
+
+	message, err := vars.RobotRuntime.SendMusicMessage(toWxID, songInfo)
+	if err != nil {
+		return err
+	}
+
+	m := model.Message{
+		MsgId:              message.NewMsgId,
+		ClientMsgId:        message.MsgId,
+		Type:               model.MsgTypeApp,
+		AppMsgType:         model.AppMsgTypeMusic,
+		DisplayFullContent: "机器人分享了一首歌曲",
+		MessageSource:      message.MsgSource,
+		FromWxID:           toWxID,
+		ToWxID:             vars.RobotRuntime.WxID,
+		SenderWxID:         vars.RobotRuntime.WxID,
+		IsChatRoom:         strings.HasSuffix(toWxID, "@chatroom"),
+		CreatedAt:          message.CreateTime,
+		UpdatedAt:          time.Now().Unix(),
+	}
+	err = s.msgRepo.Create(&m)
+	if err != nil {
+		log.Println("入库消息失败: ", err)
+	}
+	// 插入一条联系人记录，获取联系人列表接口获取不到未保存到通讯录的群聊
+	NewContactService(s.ctx).InsertOrUpdateContactActiveTime(m.FromWxID)
+
+	return nil
+}
+
+// 发送文件信息
+func (s *MessageService) SendFileMessage(ctx context.Context, req dto.SendFileMessageRequest, file io.Reader, fileHeader *multipart.FileHeader) error {
+	message, err := vars.RobotRuntime.MsgSendFile(robot.SendFileMessageRequest{
+		ToWxid:          req.ToWxid,
+		ClientAppDataId: req.ClientAppDataId,
+		Filename:        req.Filename,
+		FileMD5:         req.FileHash,
+		TotalLen:        req.FileSize,
+		StartPos:        req.ChunkIndex * vars.UploadFileChunkSize,
+		TotalChunks:     req.TotalChunks,
+	}, file, fileHeader)
+	if err != nil {
+		return err
+	}
+	// 文件还没上传完
+	if message == nil {
+		return nil
+	}
+
+	clientMsgId, _ := strconv.ParseInt(message.ClientMsgId, 10, 64)
+	m := model.Message{
+		MsgId:              message.NewMsgId,
+		ClientMsgId:        clientMsgId,
+		Type:               model.MsgTypeApp,
+		AppMsgType:         model.AppMsgTypeAttach,
+		Content:            message.Content,
+		DisplayFullContent: "机器人发送了一个文件",
+		MessageSource:      message.MsgSource,
+		FromWxID:           req.ToWxid,
+		ToWxID:             vars.RobotRuntime.WxID,
+		SenderWxID:         vars.RobotRuntime.WxID,
+		IsChatRoom:         strings.HasSuffix(req.ToWxid, "@chatroom"),
+		CreatedAt:          message.CreateTime,
+		UpdatedAt:          time.Now().Unix(),
+	}
+	err = s.msgRepo.Create(&m)
+	if err != nil {
+		log.Println("入库消息失败: ", err)
+	}
+	// 插入一条联系人记录，获取联系人列表接口获取不到未保存到通讯录的群聊
+	NewContactService(s.ctx).InsertOrUpdateContactActiveTime(m.FromWxID)
+
+	return nil
+}
+
+func (s *MessageService) SendFileMessageByLocalPath(toWxID string, localFilePath string) error {
+	_, _, err := s.ValidateLocalFileForSend(localFilePath, nil, 0, "文件")
+	if err != nil {
+		return err
+	}
+
+	fileHash, err := s.CalculateFileMD5(localFilePath)
+	if err != nil {
+		return fmt.Errorf("计算文件哈希失败: %w", err)
+	}
+
+	clientAppDataId := fmt.Sprintf("%v_%v", vars.RobotRuntime.WxID, time.Now().UnixNano())
+	filename := filepath.Base(localFilePath)
+
+	return s.StreamLocalFileChunks(localFilePath, vars.UploadFileChunkSize, func(chunkIndex, totalChunks, totalSize int64, chunkReader io.Reader, fileHeader *multipart.FileHeader) error {
+		err := s.SendFileMessage(s.ctx, dto.SendFileMessageRequest{
+			ToWxid:          toWxID,
+			ClientAppDataId: clientAppDataId,
+			Filename:        filename,
+			FileHash:        fileHash,
+			FileSize:        totalSize,
+			ChunkIndex:      chunkIndex,
+			TotalChunks:     totalChunks,
+		}, chunkReader, fileHeader)
+		if err != nil {
+			return fmt.Errorf("发送文件分片失败 (chunk %d/%d): %w", chunkIndex+1, totalChunks, err)
+		}
+		return nil
+	})
+}
+
+func (s *MessageService) ValidateLocalFileForSend(filePath string, allowedExts map[string]bool, maxSize int64, fileType string) (os.FileInfo, string, error) {
+	trimmedPath := strings.TrimSpace(filePath)
+	if trimmedPath == "" {
+		return nil, "", errors.New("本地文件路径不能为空")
+	}
+
+	fileInfo, err := os.Stat(trimmedPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, "", errors.New("本地文件不存在")
+		}
+		return nil, "", fmt.Errorf("读取本地%s信息失败: %w", fileType, err)
+	}
+	if fileInfo.IsDir() {
+		return nil, "", errors.New("本地文件路径不能是目录")
+	}
+	if fileInfo.Size() <= 0 {
+		return nil, "", fmt.Errorf("本地%s内容为空", fileType)
+	}
+	if maxSize > 0 && fileInfo.Size() > maxSize {
+		return nil, "", fmt.Errorf("%s大小不能超过%dMB", fileType, maxSize/(1024*1024))
+	}
+
+	fileExt := strings.ToLower(filepath.Ext(trimmedPath))
+	if len(allowedExts) == 0 {
+		return fileInfo, fileExt, nil
+	}
+	if allowedExts[fileExt] {
+		return fileInfo, fileExt, nil
+	}
+
+	detectedExt, err := s.DetectFileExtByMagic(trimmedPath)
+	if err != nil {
+		return nil, "", fmt.Errorf("检测本地%s类型失败: %w", fileType, err)
+	}
+	if allowedExts[detectedExt] {
+		return fileInfo, detectedExt, nil
+	}
+
+	return nil, "", fmt.Errorf("不支持的%s格式", fileType)
+}
+
+func (s *MessageService) DetectFileExtByMagic(filePath string) (string, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return "", fmt.Errorf("打开本地文件失败: %w", err)
+	}
+	defer file.Close()
+
+	header := make([]byte, 512)
+	n, err := file.Read(header)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", fmt.Errorf("读取文件头失败: %w", err)
+	}
+	header = header[:n]
+
+	switch {
+	case len(header) >= 3 && bytes.Equal(header[:3], []byte{0xFF, 0xD8, 0xFF}):
+		return ".jpg", nil
+	case len(header) >= 8 && bytes.Equal(header[:8], []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}):
+		return ".png", nil
+	case len(header) >= 6 && (bytes.Equal(header[:6], []byte("GIF87a")) || bytes.Equal(header[:6], []byte("GIF89a"))):
+		return ".gif", nil
+	case len(header) >= 12 && bytes.Equal(header[:4], []byte("RIFF")) && bytes.Equal(header[8:12], []byte("WEBP")):
+		return ".webp", nil
+	case len(header) >= 9 && (bytes.Equal(header[:6], []byte("#!AMR\n")) || bytes.Equal(header[:9], []byte("#!AMR-WB\n"))):
+		return ".amr", nil
+	case len(header) >= 12 && bytes.Equal(header[:4], []byte("RIFF")) && bytes.Equal(header[8:12], []byte("WAVE")):
+		return ".wav", nil
+	case len(header) >= 3 && bytes.Equal(header[:3], []byte("ID3")):
+		return ".mp3", nil
+	case len(header) >= 2 && header[0] == 0xFF && header[1]&0xE0 == 0xE0:
+		return ".mp3", nil
+	case len(header) >= 12 && bytes.Equal(header[:4], []byte("RIFF")) && bytes.Equal(header[8:11], []byte("AVI")):
+		return ".avi", nil
+	case len(header) >= 3 && bytes.Equal(header[:3], []byte("FLV")):
+		return ".flv", nil
+	case len(header) >= 4 && bytes.Equal(header[:4], []byte{0x1A, 0x45, 0xDF, 0xA3}):
+		return ".mkv", nil
+	case len(header) >= 12 && bytes.Equal(header[4:8], []byte("ftyp")):
+		brand := string(header[8:12])
+		if strings.HasPrefix(brand, "qt") {
+			return ".mov", nil
+		}
+		return ".mp4", nil
+	default:
+		return "", nil
+	}
+}
+
+func (s *MessageService) CalculateFileMD5(filePath string) (string, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return "", fmt.Errorf("打开本地文件失败: %w", err)
+	}
+	defer file.Close()
+
+	hash := md5.New()
+	if _, err = io.Copy(hash, file); err != nil {
+		return "", fmt.Errorf("读取本地文件失败: %w", err)
+	}
+
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func (s *MessageService) StreamLocalFileChunks(filePath string, chunkSize int64, handler func(chunkIndex, totalChunks, totalSize int64, chunkReader io.Reader, fileHeader *multipart.FileHeader) error) error {
+	if chunkSize <= 0 {
+		return errors.New("分片大小必须大于0")
+	}
+
+	file, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("打开本地文件失败: %w", err)
+	}
+	defer file.Close()
+
+	fileInfo, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("读取本地文件信息失败: %w", err)
+	}
+	if fileInfo.Size() <= 0 {
+		return errors.New("本地文件内容为空")
+	}
+
+	totalSize := fileInfo.Size()
+	totalChunks := (totalSize + chunkSize - 1) / chunkSize
+	filename := filepath.Base(filePath)
+
+	for chunkIndex := range totalChunks {
+		currentChunkSize := chunkSize
+		remaining := totalSize - chunkIndex*chunkSize
+		if remaining < currentChunkSize {
+			currentChunkSize = remaining
+		}
+
+		chunkData := make([]byte, int(currentChunkSize))
+		n, err := io.ReadFull(file, chunkData)
+		if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+			return fmt.Errorf("读取本地文件分片失败: %w", err)
+		}
+		if n == 0 {
+			return errors.New("读取本地文件分片失败: 数据为空")
+		}
+
+		if err := handler(chunkIndex, totalChunks, totalSize, bytes.NewReader(chunkData[:n]), &multipart.FileHeader{
+			Filename: filename,
+			Size:     int64(n),
+		}); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (s *MessageService) SendEmoji(toWxID string, md5 string, totalLen int32) error {
+	message, err := vars.RobotRuntime.SendEmoji(robot.SendEmojiRequest{
+		ToWxid:   toWxID,
+		Md5:      md5,
+		TotalLen: totalLen,
+	})
+	if err != nil {
+		return err
+	}
+
+	for _, emojiItem := range message.EmojiItem {
+		if emojiItem.Ret != 0 {
+			continue
+		}
+		m := model.Message{
+			MsgId:              emojiItem.NewMsgId,
+			ClientMsgId:        emojiItem.MsgId,
+			Type:               model.MsgTypeEmoticon,
+			Content:            "",
+			DisplayFullContent: "机器人发送了一个表情",
+			MessageSource:      "",
+			FromWxID:           toWxID,
+			ToWxID:             vars.RobotRuntime.WxID,
+			SenderWxID:         vars.RobotRuntime.WxID,
+			IsChatRoom:         strings.HasSuffix(toWxID, "@chatroom"),
+			CreatedAt:          time.Now().Unix(),
+			UpdatedAt:          time.Now().Unix(),
+		}
+		err = s.msgRepo.Create(&m)
+		if err != nil {
+			log.Println("入库消息失败: ", err)
+		}
+		// 插入一条联系人记录，获取联系人列表接口获取不到未保存到通讯录的群聊
+		NewContactService(s.ctx).InsertOrUpdateContactActiveTime(m.FromWxID)
+	}
+
+	return nil
+}
+
+func (s *MessageService) ShareLink(toWxID string, shareLinkInfo robot.ShareLinkMessage) error {
+	message, xmlStr, err := vars.RobotRuntime.ShareLink(toWxID, shareLinkInfo)
+	if err != nil {
+		return err
+	}
+	m := model.Message{
+		MsgId:              message.NewMsgId,
+		ClientMsgId:        message.MsgId,
+		Type:               model.MsgTypeApp,
+		AppMsgType:         model.AppMsgTypeUrl,
+		Content:            xmlStr,
+		DisplayFullContent: "机器人分享了一个链接",
+		MessageSource:      message.MsgSource,
+		FromWxID:           toWxID,
+		ToWxID:             vars.RobotRuntime.WxID,
+		SenderWxID:         vars.RobotRuntime.WxID,
+		IsChatRoom:         strings.HasSuffix(toWxID, "@chatroom"),
+		CreatedAt:          message.CreateTime,
+		UpdatedAt:          time.Now().Unix(),
+	}
+	err = s.msgRepo.Create(&m)
+	if err != nil {
+		log.Println("入库消息失败: ", err)
+	}
+	// 插入一条联系人记录，获取联系人列表接口获取不到未保存到通讯录的群聊
+	NewContactService(s.ctx).InsertOrUpdateContactActiveTime(m.FromWxID)
+	return nil
+}
+
+func (s *MessageService) SendCDNFile(toWxID string, content string) error {
+	message, err := vars.RobotRuntime.SendCDNFile(robot.SendCDNAttachmentRequest{
+		ToWxid:  toWxID,
+		Content: content,
+	})
+	if err != nil {
+		return err
+	}
+
+	m := model.Message{
+		MsgId:              message.NewMsgId,
+		ClientMsgId:        message.MsgId,
+		Type:               model.MsgTypeApp,
+		AppMsgType:         model.AppMsgTypeAttach,
+		Content:            "",
+		DisplayFullContent: "机器人转发了一个文件",
+		MessageSource:      message.MsgSource,
+		FromWxID:           toWxID,
+		ToWxID:             vars.RobotRuntime.WxID,
+		SenderWxID:         vars.RobotRuntime.WxID,
+		IsChatRoom:         strings.HasSuffix(toWxID, "@chatroom"),
+		CreatedAt:          message.CreateTime,
+		UpdatedAt:          time.Now().Unix(),
+	}
+	err = s.msgRepo.Create(&m)
+	if err != nil {
+		log.Println("入库消息失败: ", err)
+	}
+	// 插入一条联系人记录，获取联系人列表接口获取不到未保存到通讯录的群聊
+	NewContactService(s.ctx).InsertOrUpdateContactActiveTime(m.FromWxID)
+
+	return nil
+}
+
+func (s *MessageService) SendCDNImg(toWxID string, content string) error {
+	message, err := vars.RobotRuntime.SendCDNImg(robot.SendCDNAttachmentRequest{
+		ToWxid:  toWxID,
+		Content: content,
+	})
+	if err != nil {
+		return err
+	}
+
+	m := model.Message{
+		MsgId:              message.Newmsgid,
+		ClientMsgId:        message.Msgid,
+		Type:               model.MsgTypeImage,
+		Content:            "",
+		DisplayFullContent: "机器人发送了一张图片",
+		MessageSource:      message.MsgSource,
+		FromWxID:           toWxID,
+		ToWxID:             vars.RobotRuntime.WxID,
+		SenderWxID:         vars.RobotRuntime.WxID,
+		IsChatRoom:         strings.HasSuffix(toWxID, "@chatroom"),
+		CreatedAt:          message.CreateTime,
+		UpdatedAt:          time.Now().Unix(),
+	}
+	err = s.msgRepo.Create(&m)
+	if err != nil {
+		log.Println("入库消息失败: ", err)
+	}
+	// 插入一条联系人记录，获取联系人列表接口获取不到未保存到通讯录的群聊
+	NewContactService(s.ctx).InsertOrUpdateContactActiveTime(m.FromWxID)
+
+	return nil
+}
+
+func (s *MessageService) SendCDNVideo(toWxID string, content string) error {
+	message, err := vars.RobotRuntime.SendCDNVideo(robot.SendCDNAttachmentRequest{
+		ToWxid:  toWxID,
+		Content: content,
+	})
+	if err != nil {
+		return err
+	}
+
+	m := model.Message{
+		MsgId:              message.NewMsgId,
+		ClientMsgId:        message.MsgId,
+		Type:               model.MsgTypeVideo,
+		Content:            "",
+		DisplayFullContent: "机器人发送了一个视频",
+		MessageSource:      message.MsgSource,
+		FromWxID:           toWxID,
+		ToWxID:             vars.RobotRuntime.WxID,
+		SenderWxID:         vars.RobotRuntime.WxID,
+		IsChatRoom:         strings.HasSuffix(toWxID, "@chatroom"),
+		CreatedAt:          time.Now().Unix(),
+		UpdatedAt:          time.Now().Unix(),
+	}
+	err = s.msgRepo.Create(&m)
+	if err != nil {
+		log.Println("入库消息失败: ", err)
+	}
+	// 插入一条联系人记录，获取联系人列表接口获取不到未保存到通讯录的群聊
+	NewContactService(s.ctx).InsertOrUpdateContactActiveTime(m.FromWxID)
+
+	return nil
+}
+
+func (s *MessageService) aiTextMessage(isAssistant bool, content string) openai.ChatCompletionMessageParamUnion {
+	if isAssistant {
+		return openai.AssistantMessage(content)
+	}
+	return openai.UserMessage(content)
+}
+
+func (s *MessageService) aiTextPartMessage(isAssistant bool, texts ...string) openai.ChatCompletionMessageParamUnion {
+	if isAssistant {
+		parts := make([]openai.ChatCompletionAssistantMessageParamContentArrayOfContentPartUnion, 0, len(texts))
+		for _, text := range texts {
+			parts = append(parts, openai.ChatCompletionAssistantMessageParamContentArrayOfContentPartUnion{
+				OfText: &openai.ChatCompletionContentPartTextParam{Text: text},
+			})
+		}
+		return openai.AssistantMessage(parts)
+	}
+
+	parts := make([]openai.ChatCompletionContentPartUnionParam, 0, len(texts))
+	for _, text := range texts {
+		parts = append(parts, openai.TextContentPart(text))
+	}
+	return openai.UserMessage(parts)
+}
+
+func (s *MessageService) buildQuoteAIMessage(msg *model.Message, isAssistant bool) (openai.ChatCompletionMessageParamUnion, bool) {
+	var xmlMessage robot.XmlMessage
+	if err := vars.RobotRuntime.XmlDecoder(msg.Content, &xmlMessage); err != nil {
+		return openai.ChatCompletionMessageParamUnion{}, false
+	}
+
+	switch xmlMessage.AppMsg.ReferMsg.Type {
+	case int(model.MsgTypeText):
+		return s.aiTextPartMessage(isAssistant, xmlMessage.AppMsg.ReferMsg.Content, xmlMessage.AppMsg.Title), true
+	case int(model.MsgTypeImage):
+		referMsg, ok := s.getReferMessageByMsgID(xmlMessage.AppMsg.ReferMsg.SvrID)
+		if !ok {
+			return openai.ChatCompletionMessageParamUnion{}, false
+		}
+		return s.aiTextPartMessage(isAssistant, xmlMessage.AppMsg.Title+"\n\n 图片地址: "+referMsg.AttachmentUrl), true
+	case int(model.MsgTypeVoice):
+		referMsg, ok := s.getReferMessageByMsgID(xmlMessage.AppMsg.ReferMsg.SvrID)
+		if !ok {
+			return openai.ChatCompletionMessageParamUnion{}, false
+		}
+		return s.aiTextPartMessage(isAssistant, xmlMessage.AppMsg.Title+"\n\n 语音地址: "+referMsg.AttachmentUrl), true
+	case int(model.MsgTypeVideo):
+		referMsg, ok := s.getReferMessageByMsgID(xmlMessage.AppMsg.ReferMsg.SvrID)
+		if !ok {
+			return openai.ChatCompletionMessageParamUnion{}, false
+		}
+		return s.aiTextMessage(isAssistant, "视频地址: "+referMsg.AttachmentUrl+"\n\n"+xmlMessage.AppMsg.Title), true
+	case int(model.MsgTypeEmoticon):
+		if strings.TrimSpace(xmlMessage.AppMsg.Title) == "" {
+			return openai.ChatCompletionMessageParamUnion{}, false
+		}
+		referMsg, ok := s.getReferMessageByMsgID(xmlMessage.AppMsg.ReferMsg.SvrID)
+		if !ok {
+			return openai.ChatCompletionMessageParamUnion{}, false
+		}
+		return s.aiTextPartMessage(isAssistant, xmlMessage.AppMsg.Title+"\n\n 图片地址: "+referMsg.AttachmentUrl), true
+	case int(model.MsgTypeApp):
+		referMsg, ok := s.getReferMessageByMsgID(xmlMessage.AppMsg.ReferMsg.SvrID)
+		if !ok {
+			return openai.ChatCompletionMessageParamUnion{}, false
+		}
+		switch referMsg.AppMsgType {
+		case model.AppMsgTypeEmoji:
+			if strings.TrimSpace(xmlMessage.AppMsg.Title) == "" {
+				return openai.ChatCompletionMessageParamUnion{}, false
+			}
+			return s.aiTextPartMessage(isAssistant, xmlMessage.AppMsg.Title+"\n\n 图片地址: "+referMsg.AttachmentUrl), true
+		case model.AppMsgTypeChatHistory:
+			if strings.TrimSpace(xmlMessage.AppMsg.Title) == "" {
+				return openai.ChatCompletionMessageParamUnion{}, false
+			}
+			var historyMessage robot.ChatHistoryMessage
+			var messageRecords []robot.ChatHistoryMessageRecord
+			if err := vars.RobotRuntime.XmlDecoder(referMsg.Content, &historyMessage); err != nil {
+				log.Println("引用消息解析失败")
+				return openai.ChatCompletionMessageParamUnion{}, false
+			}
+			recordInfo, err := historyMessage.AppMsg.RecordItem.ParseRecordInfo()
+			if err != nil {
+				log.Println("聊天记录解析失败")
+				return openai.ChatCompletionMessageParamUnion{}, false
+			}
+			if recordInfo == nil || len(recordInfo.DataList.Items) == 0 {
+				log.Println("聊天记录内容为空")
+				return openai.ChatCompletionMessageParamUnion{}, false
+			}
+
+			messageRecords = robot.ExtractChatHistoryMessageRecords(recordInfo)
+			if len(messageRecords) == 0 {
+				log.Println("聊天记录内容为空")
+				return openai.ChatCompletionMessageParamUnion{}, false
+			}
+
+			var sb strings.Builder
+			for _, messageRecord := range messageRecords {
+				sb.WriteString(messageRecord.Content)
+				sb.WriteString("\n\n")
+			}
+
+			return s.aiTextPartMessage(isAssistant, sb.String()+xmlMessage.AppMsg.Title), true
+		case model.AppMsgTypeAttach:
+			if strings.TrimSpace(xmlMessage.AppMsg.Title) == "" {
+				return openai.ChatCompletionMessageParamUnion{}, false
+			}
+			return s.aiTextMessage(isAssistant, "文件地址: "+referMsg.AttachmentUrl+"\n\n"+xmlMessage.AppMsg.Title), true
+		case model.AppMsgTypeUrl:
+			if strings.TrimSpace(xmlMessage.AppMsg.Title) == "" {
+				return openai.ChatCompletionMessageParamUnion{}, false
+			}
+			var refXmlMessage robot.XmlMessage
+			if err := vars.RobotRuntime.XmlDecoder(referMsg.Content, &refXmlMessage); err != nil {
+				return openai.ChatCompletionMessageParamUnion{}, false
+			}
+			if refXmlMessage.AppMsg.URL == "" {
+				return openai.ChatCompletionMessageParamUnion{}, false
+			}
+			return s.aiTextMessage(isAssistant, fmt.Sprintf(
+				"文章标题: %s\n\n文章摘要: %s\n\n文章地址: %s\n\n%s",
+				refXmlMessage.AppMsg.Title,
+				refXmlMessage.AppMsg.Des,
+				strings.ReplaceAll(refXmlMessage.AppMsg.URL, "&amp;", "&"),
+				xmlMessage.AppMsg.Title,
+			)), true
+		case model.AppMsgTypequote:
+			subRefMsg, err := s.msgRepo.GetByID(referMsg.ID)
+			if err != nil || subRefMsg == nil {
+				return openai.ChatCompletionMessageParamUnion{}, false
+			}
+
+			var subXmlMessage robot.XmlMessage
+			if err := vars.RobotRuntime.XmlDecoder(subRefMsg.Content, &subXmlMessage); err != nil {
+				return openai.ChatCompletionMessageParamUnion{}, false
+			}
+			return s.aiTextPartMessage(isAssistant, subXmlMessage.AppMsg.Title, xmlMessage.AppMsg.Title), true
+		}
+	}
+
+	return openai.ChatCompletionMessageParamUnion{}, false
+}
+
+func (s *MessageService) getReferMessageByMsgID(referMsgIDStr string) (*model.Message, bool) {
+	referMsgID, err := strconv.ParseInt(referMsgIDStr, 10, 64)
+	if err != nil {
+		return nil, false
+	}
+	referMsg, err := s.msgRepo.GetByMsgID(referMsgID)
+	if err != nil || referMsg == nil {
+		return nil, false
+	}
+	return referMsg, true
+}
+
+func (s *MessageService) getReferMessageByID(referMsgIDStr string) (*model.Message, bool) {
+	referMsgID, err := strconv.ParseInt(referMsgIDStr, 10, 64)
+	if err != nil {
+		return nil, false
+	}
+	referMsg, err := s.msgRepo.GetByID(referMsgID)
+	if err != nil || referMsg == nil {
+		return nil, false
+	}
+	return referMsg, true
+}
+
+func (s *MessageService) buildAIMessageContextMessage(msg *model.Message) (openai.ChatCompletionMessageParamUnion, bool) {
+	isAssistant := msg.SenderWxID == vars.RobotRuntime.WxID
+
+	switch {
+	case msg.Type == model.MsgTypeText:
+		if strings.TrimSpace(msg.Content) == "" {
+			return openai.ChatCompletionMessageParamUnion{}, false
+		}
+		return s.aiTextMessage(isAssistant, msg.Content), true
+	case msg.Type == model.MsgTypeImage && msg.AttachmentUrl != "":
+		return s.aiTextPartMessage(isAssistant, "图片地址: "+msg.AttachmentUrl), true
+	case msg.Type == model.MsgTypeVideo && msg.AttachmentUrl != "":
+		return s.aiTextMessage(isAssistant, "视频地址: "+msg.AttachmentUrl), true
+	case msg.Type == model.MsgTypeApp && msg.AppMsgType == model.AppMsgTypequote:
+		return s.buildQuoteAIMessage(msg, isAssistant)
+	default:
+		return openai.ChatCompletionMessageParamUnion{}, false
+	}
+}
+
+func (s *MessageService) ProcessAIMessageContext(messages []*model.Message) []openai.ChatCompletionMessageParamUnion {
+	aiMessages := make([]openai.ChatCompletionMessageParamUnion, 0, len(messages))
+	messageCtxMap := make(map[int64]bool)
+
+	for _, msg := range messages {
+		if messageCtxMap[msg.MsgId] {
+			continue
+		}
+
+		aiMessage, ok := s.buildAIMessageContextMessage(msg)
+		if !ok {
+			continue
+		}
+
+		messageCtxMap[msg.MsgId] = true
+		aiMessages = append(aiMessages, aiMessage)
+	}
+
+	return aiMessages
+}
+
+func (s *MessageService) SetMessageIsInContext(message *model.Message) error {
+	return s.msgRepo.SetMessageIsInContext(message)
+}
+
+func (s *MessageService) GetFriendAIMessageContext(message *model.Message) ([]openai.ChatCompletionMessageParamUnion, error) {
+	messages, err := s.msgRepo.GetFriendAIMessageContext(message)
+	if err != nil {
+		return nil, err
+	}
+	if !slices.ContainsFunc(messages, func(m *model.Message) bool {
+		return m.ID == message.ID
+	}) {
+		messages = append(messages, message)
+	}
+	return s.ProcessAIMessageContext(messages), nil
+}
+
+func (s *MessageService) ResetFriendAIMessageContext(message *model.Message) error {
+	return s.msgRepo.ResetFriendAIMessageContext(message)
+}
+
+func (s *MessageService) GetChatRoomAIMessageContext(message *model.Message) ([]openai.ChatCompletionMessageParamUnion, error) {
+	messages, err := s.msgRepo.GetChatRoomAIMessageContext(message)
+	if err != nil {
+		return nil, err
+	}
+	if !slices.ContainsFunc(messages, func(m *model.Message) bool {
+		return m.ID == message.ID
+	}) {
+		messages = append(messages, message)
+	}
+	return s.ProcessAIMessageContext(messages), nil
+}
+
+func (s *MessageService) UpdateMessage(message *model.Message) error {
+	return s.msgRepo.Update(message)
+}
+
+func (s *MessageService) ResetChatRoomAIMessageContext(message *model.Message) error {
+	return s.msgRepo.ResetChatRoomAIMessageContext(message)
+}
+
+func (s *MessageService) GetAIMessageContext(message *model.Message) ([]openai.ChatCompletionMessageParamUnion, error) {
+	if message.IsChatRoom {
+		return s.GetChatRoomAIMessageContext(message)
+	}
+	return s.GetFriendAIMessageContext(message)
+}
+
+func (s *MessageService) GetYesterdayChatRommRank(chatRoomID string) ([]*dto.ChatRoomRank, error) {
+	return s.msgRepo.GetYesterdayChatRommRank(vars.RobotRuntime.WxID, chatRoomID)
+}
+
+func (s *MessageService) GetLastWeekChatRommRank(chatRoomID string) ([]*dto.ChatRoomRank, error) {
+	return s.msgRepo.GetLastWeekChatRommRank(vars.RobotRuntime.WxID, chatRoomID)
+}
+
+func (s *MessageService) GetLastMonthChatRommRank(chatRoomID string) ([]*dto.ChatRoomRank, error) {
+	return s.msgRepo.GetLastMonthChatRommRank(vars.RobotRuntime.WxID, chatRoomID)
+}
+
+func (s *MessageService) ChatRoomAIDisabled(chatRoomID string) error {
+	chatRoomSettingsSvc := NewChatRoomSettingsService(s.ctx)
+	chatRoomSettings, err := chatRoomSettingsSvc.GetChatRoomSettings(chatRoomID)
+	if err != nil {
+		return err
+	}
+	if chatRoomSettings == nil || chatRoomSettings.ChatAIEnabled == nil || !*chatRoomSettings.ChatAIEnabled {
+		return nil
+	}
+	disabled := false
+	chatRoomSettings.ChatAIEnabled = &disabled
+	err = chatRoomSettingsSvc.SaveChatRoomSettings(chatRoomSettings)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *MessageService) GetChatRoomMember(chatRoomID string, wechatID string) (*model.ChatRoomMember, error) {
+	return s.crmRepo.GetChatRoomMember(chatRoomID, wechatID)
+}

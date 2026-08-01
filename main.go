@@ -1,0 +1,91 @@
+package main
+
+import (
+	"fmt"
+	"log"
+	"os"
+	"time"
+	"github.com/xiaoguiwucan/openchat-wx/common_cron"
+	"github.com/xiaoguiwucan/openchat-wx/model"
+	"github.com/xiaoguiwucan/openchat-wx/pkg/shutdown"
+	"github.com/xiaoguiwucan/openchat-wx/router"
+	"github.com/xiaoguiwucan/openchat-wx/startup"
+	"github.com/xiaoguiwucan/openchat-wx/vars"
+
+	"github.com/gin-gonic/gin"
+)
+
+var Version = "unknown"
+
+func main() {
+	log.Printf("[openchat-wx] 启动，版本: %s", Version)
+
+	// 加载配置
+	if err := startup.LoadConfig(); err != nil {
+		log.Fatalf("加载配置失败: %v", err)
+	}
+	if err := startup.SetupVars(); err != nil {
+		log.Fatalf("初始化失败: %v", err)
+	}
+	if err := startup.AutoMigrate(); err != nil {
+		log.Fatalf("自动迁移失败: %v", err)
+	}
+	if err := startup.SeedData(); err != nil {
+		log.Fatalf("种子数据初始化失败: %v", err)
+	}
+	shutdownManager := shutdown.NewShutdownManager(30 * time.Second)
+	// 注册消息处理插件
+	startup.RegisterMessagePlugin()
+	// 初始化微信机器人
+	if err := startup.InitWechatRobot(); err != nil {
+		log.Fatalf("启动微信机器人失败: %v", err)
+	}
+	// 初始化RAG & 记忆服务
+	if err := startup.InitRAGService(); err != nil {
+		log.Printf("[RAG] 初始化RAG服务失败（非致命）: %v", err)
+	}
+	// 初始化定时任务
+	vars.CronManager = common_cron.NewCronManager()
+	vars.CronManager.Clear()
+	vars.CronManager.Start()
+	// 注册全局配置变更回调：定时任务
+	vars.SettingsObserver.Register("定时任务", func(settings *model.GlobalSettings) error {
+		vars.CronManager.Clear()
+		vars.CronManager.SetGlobalSettings(settings)
+		if vars.RobotRuntime.Status == model.RobotStatusOnline {
+			vars.CronManager.Start()
+		}
+		return nil
+	})
+	// 初始化 Agent
+	err := startup.InitAgent()
+	if err != nil {
+		log.Fatalf("初始化 Agent 失败: %v", err)
+	}
+	// 启动HTTP服务
+	gin.SetMode(os.Getenv("GIN_MODE"))
+	app := gin.Default()
+
+	// 注册路由
+	if err := router.RegisterRouter(app); err != nil {
+		log.Fatalf("注册路由失败: %v", err)
+	}
+	dbConn := &shutdown.DBConnection{
+		DB:      vars.DB,
+		AdminDB: vars.AdminDB,
+	}
+	redisConn := &shutdown.RedisConnection{
+		Client: vars.RedisClient,
+	}
+	shutdownManager.Register(dbConn)
+	shutdownManager.Register(redisConn)
+	shutdownManager.Register(vars.RobotRuntime)
+	shutdownManager.Register(vars.CronManager)
+	shutdownManager.Register(vars.Agent)
+	// 开始监听停止信号
+	shutdownManager.Start()
+	// 启动服务
+	if err := app.Run(fmt.Sprintf(":%s", vars.WechatClientPort)); err != nil {
+		log.Panicf("服务启动失败：%v", err)
+	}
+}
