@@ -1,3 +1,4 @@
+ARG RUNTIME_IMAGE=registry.cn-shenzhen.aliyuncs.com/houhou/wechat-robot-client:latest
 FROM --platform=$BUILDPLATFORM golang:1.25.8 AS builder
 
 ARG TARGETOS
@@ -20,7 +21,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
   go build -trimpath -ldflags="-s -w -X main.Version=${VERSION}" -o openchat-wx
 
 
-FROM registry.cn-shenzhen.aliyuncs.com/houhou/silk-base:latest
+FROM ${RUNTIME_IMAGE}
 
 ENV GIN_MODE=release \
   TZ=Asia/Shanghai

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"strings"
+
 	"github.com/xiaoguiwucan/openchat-wx/interface/settings"
 	"github.com/xiaoguiwucan/openchat-wx/model"
 	"github.com/xiaoguiwucan/openchat-wx/repository"
@@ -168,6 +169,10 @@ func (s *FriendSettingsService) IsShortVideoParsingEnabled() bool {
 
 func (s *FriendSettingsService) IsAITrigger() bool {
 	return s.IsAIChatEnabled()
+}
+
+func (s *FriendSettingsService) IsFreeReply() bool {
+	return false
 }
 
 func (s *FriendSettingsService) GetAITriggerWord() string {

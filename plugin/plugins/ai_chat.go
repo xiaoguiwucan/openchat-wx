@@ -169,7 +169,11 @@ func (p *AIChatPlugin) SendMessage(ctx *plugin.MessageContext, aiReplyText strin
 		return
 	}
 	if ctx.Message.IsChatRoom {
-		ctx.MessageService.SendTextMessage(ctx.Message.FromWxID, aiReplyText, ctx.Message.SenderWxID)
+		if ctx.Settings.IsFreeReply() {
+			ctx.MessageService.SendTextMessage(ctx.Message.FromWxID, aiReplyText)
+		} else {
+			ctx.MessageService.SendTextMessage(ctx.Message.FromWxID, aiReplyText, ctx.Message.SenderWxID)
+		}
 	} else {
 		ctx.MessageService.SendTextMessage(ctx.Message.FromWxID, aiReplyText)
 	}

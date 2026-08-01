@@ -39,6 +39,10 @@ type GlobalSettings struct {
 	ID                        int64               `gorm:"column:id;primaryKey;autoIncrement;comment:公共配置表主键ID" json:"id"`
 	ChatAIEnabled             *bool               `gorm:"column:chat_ai_enabled;default:false;comment:是否启用AI聊天功能" json:"chat_ai_enabled"`
 	ChatAITrigger             *string             `gorm:"column:chat_ai_trigger;type:varchar(20);default:'';comment:触发聊天AI的关键词" json:"chat_ai_trigger"`
+	FreeReplyEnabled          *bool               `gorm:"column:free_reply_enabled;default:false;comment:是否启用群聊自由回复" json:"free_reply_enabled"`
+	FreeReplyLevel            string              `gorm:"column:free_reply_level;type:varchar(20);default:'normal';comment:自由回复档位" json:"free_reply_level"`
+	FreeReplyCooldownSeconds  *int                `gorm:"column:free_reply_cooldown_seconds;default:60;comment:自由回复冷却秒数" json:"free_reply_cooldown_seconds"`
+	FreeReplyDailyLimit       *int                `gorm:"column:free_reply_daily_limit;default:30;comment:每群每日自由回复上限" json:"free_reply_daily_limit"`
 	ChatBaseURL               string              `gorm:"column:chat_base_url;type:varchar(255);default:'';comment:聊天AI的基础URL地址" json:"chat_base_url"`
 	ChatAPIKey                string              `gorm:"column:chat_api_key;type:varchar(255);default:'';comment:聊天AI的API密钥" json:"chat_api_key"`
 	ChatModel                 string              `gorm:"column:chat_model;type:varchar(100);default:'';comment:聊天AI使用的模型名称" json:"chat_model"`

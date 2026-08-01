@@ -7,6 +7,7 @@ import (
 	"log"
 	"regexp"
 	"strings"
+
 	"github.com/xiaoguiwucan/openchat-wx/interface/settings"
 	"github.com/xiaoguiwucan/openchat-wx/model"
 	"github.com/xiaoguiwucan/openchat-wx/pkg/robot"
@@ -22,6 +23,7 @@ type ChatRoomSettingsService struct {
 	crsRepo          *repository.ChatRoomSettings
 	globalSettings   *model.GlobalSettings
 	chatRoomSettings *model.ChatRoomSettings
+	isFreeReply      bool
 }
 
 var _ settings.Settings = (*ChatRoomSettingsService)(nil)
@@ -176,6 +178,7 @@ func (s *ChatRoomSettingsService) logAITrigger(reason, triggerWord, messageConte
 }
 
 func (s *ChatRoomSettingsService) IsAITrigger() bool {
+	s.isFreeReply = false
 	messageContent := s.Message.Content
 	if s.Message.AppMsgType == model.AppMsgTypequote {
 		var xmlMessage robot.XmlMessage
@@ -193,35 +196,49 @@ func (s *ChatRoomSettingsService) IsAITrigger() bool {
 		s.logAITrigger("mentioned", "", messageContent)
 		return true
 	}
-	if s.chatRoomSettings == nil {
-		if s.globalSettings == nil {
-			return false
-		}
-		if s.globalSettings.ChatAIEnabled == nil || !*s.globalSettings.ChatAIEnabled {
-			return false
-		}
-		if *s.globalSettings.ChatAITrigger != "" && strings.HasPrefix(messageContent, *s.globalSettings.ChatAITrigger) {
-			s.logAITrigger("trigger_word.global", *s.globalSettings.ChatAITrigger, messageContent)
-			return true
-		}
-		return false
+	if matched, reason, triggerWord := s.matchConfiguredAITrigger(messageContent); matched {
+		s.logAITrigger(reason, triggerWord, messageContent)
+		return true
 	}
-	if s.chatRoomSettings.ChatAIEnabled == nil || !*s.chatRoomSettings.ChatAIEnabled {
-		return false
-	}
-	if s.chatRoomSettings.ChatAITrigger != nil && *s.chatRoomSettings.ChatAITrigger != "" {
-		if strings.HasPrefix(messageContent, *s.chatRoomSettings.ChatAITrigger) {
-			s.logAITrigger("trigger_word.chat_room", *s.chatRoomSettings.ChatAITrigger, messageContent)
-			return true
-		}
-		return false
-	}
-	if s.globalSettings != nil && s.globalSettings.ChatAITrigger != nil && *s.globalSettings.ChatAITrigger != "" &&
-		strings.HasPrefix(messageContent, *s.globalSettings.ChatAITrigger) {
-		s.logAITrigger("trigger_word.global_fallback", *s.globalSettings.ChatAITrigger, messageContent)
+	if s.shouldFreeReply(messageContent) {
+		s.isFreeReply = true
+		s.logAITrigger("free_reply", "", messageContent)
 		return true
 	}
 	return false
+}
+
+func (s *ChatRoomSettingsService) matchConfiguredAITrigger(messageContent string) (bool, string, string) {
+	if s.chatRoomSettings == nil {
+		if s.globalSettings == nil {
+			return false, "", ""
+		}
+		if s.globalSettings.ChatAIEnabled == nil || !*s.globalSettings.ChatAIEnabled {
+			return false, "", ""
+		}
+		if s.globalSettings.ChatAITrigger != nil && *s.globalSettings.ChatAITrigger != "" && strings.HasPrefix(messageContent, *s.globalSettings.ChatAITrigger) {
+			return true, "trigger_word.global", *s.globalSettings.ChatAITrigger
+		}
+		return false, "", ""
+	}
+	if s.chatRoomSettings.ChatAIEnabled == nil || !*s.chatRoomSettings.ChatAIEnabled {
+		return false, "", ""
+	}
+	if s.chatRoomSettings.ChatAITrigger != nil && *s.chatRoomSettings.ChatAITrigger != "" {
+		if strings.HasPrefix(messageContent, *s.chatRoomSettings.ChatAITrigger) {
+			return true, "trigger_word.chat_room", *s.chatRoomSettings.ChatAITrigger
+		}
+		return false, "", ""
+	}
+	if s.globalSettings != nil && s.globalSettings.ChatAITrigger != nil && *s.globalSettings.ChatAITrigger != "" &&
+		strings.HasPrefix(messageContent, *s.globalSettings.ChatAITrigger) {
+		return true, "trigger_word.global_fallback", *s.globalSettings.ChatAITrigger
+	}
+	return false, "", ""
+}
+
+func (s *ChatRoomSettingsService) IsFreeReply() bool {
+	return s.isFreeReply
 }
 
 func (s *ChatRoomSettingsService) GetAITriggerWord() string {

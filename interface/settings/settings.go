@@ -34,6 +34,7 @@ type Settings interface {
 	IsTTSEnabled() bool
 	IsShortVideoParsingEnabled() bool
 	IsAITrigger() bool
+	IsFreeReply() bool
 	GetAITriggerWord() string
 	GetPatConfig() PatConfig
 }

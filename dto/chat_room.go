@@ -8,6 +8,12 @@ type SyncChatRoomMemberRequest struct {
 	ChatRoomID string `form:"chat_room_id" json:"chat_room_id" binding:"required"`
 }
 
+type RunChatRoomSummaryRequest struct {
+	ChatRoomID string `form:"chat_room_id" json:"chat_room_id" binding:"required"`
+	StartTime  int64  `form:"start_time" json:"start_time"`
+	EndTime    int64  `form:"end_time" json:"end_time"`
+}
+
 type ChatRoomMemberListRequest struct {
 	ChatRoomID string `form:"chat_room_id" json:"chat_room_id" binding:"required"`
 	Keyword    string `form:"keyword" json:"keyword"`

@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"time"
+
 	"github.com/xiaoguiwucan/openchat-wx/dto"
 	"github.com/xiaoguiwucan/openchat-wx/model"
 	"github.com/xiaoguiwucan/openchat-wx/pkg/appx"
@@ -45,6 +46,19 @@ func (m *Message) GetByMsgID(msgId int64) (*model.Message, error) {
 		return nil, err
 	}
 	return &message, nil
+}
+
+func (m *Message) GetRecentEmoticons(fromWxID string, limit int) ([]*model.Message, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	var messages []*model.Message
+	err := m.DB.WithContext(m.Ctx).
+		Where("from_wxid = ? AND `type` = ?", fromWxID, model.MsgTypeEmoticon).
+		Order("id DESC").
+		Limit(limit).
+		Find(&messages).Error
+	return messages, err
 }
 
 func (m *Message) GetByContactID(req dto.ChatHistoryRequest, pager appx.Pager) ([]*model.Message, int64, error) {

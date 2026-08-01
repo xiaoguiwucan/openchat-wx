@@ -2,7 +2,9 @@ package controller
 
 import (
 	"errors"
+	"time"
 	"unicode/utf8"
+
 	"github.com/xiaoguiwucan/openchat-wx/dto"
 	"github.com/xiaoguiwucan/openchat-wx/model"
 	"github.com/xiaoguiwucan/openchat-wx/pkg/appx"
@@ -26,6 +28,30 @@ func (cr *ChatRoom) SyncChatRoomMember(c *gin.Context) {
 		return
 	}
 	service.NewChatRoomService(c).SyncChatRoomMember(req.ChatRoomID)
+	resp.ToResponse(nil)
+}
+
+func (cr *ChatRoom) RunChatRoomSummary(c *gin.Context) {
+	var req dto.RunChatRoomSummaryRequest
+	resp := appx.NewResponse(c)
+	if ok, err := appx.BindAndValid(c, &req); !ok || err != nil {
+		resp.ToErrorResponse(errors.New("参数错误"))
+		return
+	}
+	if req.EndTime == 0 {
+		req.EndTime = time.Now().Unix()
+	}
+	if req.StartTime == 0 {
+		req.StartTime = req.EndTime - int64((24 * time.Hour).Seconds())
+	}
+	if req.StartTime >= req.EndTime || req.EndTime-req.StartTime > int64((7*24*time.Hour).Seconds()) {
+		resp.ToErrorResponse(errors.New("总结时间范围必须在 7 天内，且开始时间早于结束时间"))
+		return
+	}
+	if err := service.NewChatRoomService(c).ChatRoomAISummaryByRange(req.ChatRoomID, req.StartTime, req.EndTime); err != nil {
+		resp.ToErrorResponse(err)
+		return
+	}
 	resp.ToResponse(nil)
 }
 

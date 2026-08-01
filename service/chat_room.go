@@ -674,6 +674,27 @@ func (s *ChatRoomService) ChatRoomAISummaryByChatRoomID(globalSettings *model.Gl
 	return nil
 }
 
+func (s *ChatRoomService) ChatRoomAISummaryByRange(chatRoomID string, startTime, endTime int64) error {
+	globalSettings, err := s.gsRepo.GetGlobalSettings()
+	if err != nil {
+		return err
+	}
+	if globalSettings == nil || globalSettings.ChatAIEnabled == nil || !*globalSettings.ChatAIEnabled {
+		return errors.New("全局 AI 聊天尚未启用")
+	}
+	setting, err := s.crsRepo.GetChatRoomSettings(chatRoomID)
+	if err != nil {
+		return err
+	}
+	if setting == nil {
+		return errors.New("群聊设置不存在")
+	}
+	if setting.ChatRoomSummaryEnabled == nil || !*setting.ChatRoomSummaryEnabled {
+		return errors.New("该群尚未启用群聊总结")
+	}
+	return s.ChatRoomAISummaryByChatRoomID(globalSettings, setting, startTime, endTime)
+}
+
 func (s *ChatRoomService) ChatRoomAISummary() error {
 	// 获取今天凌晨零点
 	now := time.Now()

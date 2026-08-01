@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/openai/openai-go/v3/option"
 
 	"github.com/xiaoguiwucan/openchat-wx/interface/settings"
+	"github.com/xiaoguiwucan/openchat-wx/pkg/aicompat"
 	"github.com/xiaoguiwucan/openchat-wx/pkg/robotctx"
 	"github.com/xiaoguiwucan/openchat-wx/repository"
 	"github.com/xiaoguiwucan/openchat-wx/vars"
@@ -20,6 +22,8 @@ type AIChatService struct {
 	ctx    context.Context
 	config settings.Settings
 }
+
+var imageURLInContextRegexp = regexp.MustCompile(`图片地址:\s*(https?://\S+)`)
 
 func NewAIChatService(ctx context.Context, config settings.Settings) *AIChatService {
 	return &AIChatService{
@@ -66,6 +70,9 @@ func (s *AIChatService) Chat(robotCtx robotctx.RobotContext, aiMessages []openai
 		}
 		log.Printf("[GroupContext] 构建群聊上下文耗时: %v", time.Since(start))
 	}
+	if imageDescription := s.describeLatestImage(aiConfig, aiMessages); imageDescription != "" {
+		systemMessages = append(systemMessages, openai.SystemMessage("【图片/表情识别结果】\n"+imageDescription))
+	}
 	// 群友单独的对话记录
 	aiMessages = append(systemMessages, aiMessages...)
 
@@ -83,6 +90,29 @@ func (s *AIChatService) Chat(robotCtx robotctx.RobotContext, aiMessages []openai
 	log.Printf("[AI] 接口调用耗时: %v", time.Since(aiStart))
 
 	return reply, err
+}
+
+func (s *AIChatService) describeLatestImage(aiConfig settings.AIConfig, messages []openai.ChatCompletionMessageParamUnion) string {
+	if aiConfig.ImageRecognitionModel == "" {
+		return ""
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		matches := imageURLInContextRegexp.FindStringSubmatch(s.chatMessageParamText(messages[i]))
+		if len(matches) != 2 {
+			continue
+		}
+		description, err := aicompat.NewClient().DescribeImage(s.ctx, aicompat.Config{
+			BaseURL: aiConfig.BaseURL,
+			APIKey:  aiConfig.APIKey,
+			Model:   aiConfig.ImageRecognitionModel,
+		}, strings.TrimRight(matches[1], "，,。.!！?？"), "")
+		if err != nil {
+			log.Printf("[Vision] 图片识别失败，继续文本回复: %v", err)
+			return ""
+		}
+		return description
+	}
+	return ""
 }
 
 func (s *AIChatService) latestChatMessageText(messages []openai.ChatCompletionMessageParamUnion) string {

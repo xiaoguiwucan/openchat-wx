@@ -425,11 +425,16 @@ func (m *MCPManager) convertSingleTool(serverName string, mcpTool *sdkmcp.Tool) 
 	fn := openai.FunctionDefinitionParam{
 		Name:        toolName,
 		Description: openai.String(mcpTool.Description),
+		Parameters:  params,
 	}
 
-	// 只有在不是“无参数工具”时才设置 Parameters
-	if !noParams {
-		fn.Parameters = params
+	// Some OpenAI-compatible gateways require every function tool to include
+	// a parameters schema, even when the function accepts no arguments.
+	if noParams {
+		fn.Parameters = openai.FunctionParameters{
+			"type":       "object",
+			"properties": map[string]any{},
+		}
 	}
 
 	return openai.ChatCompletionFunctionTool(fn), nil

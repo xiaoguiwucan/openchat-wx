@@ -145,9 +145,22 @@ Windows PowerShell：
 ```bash
 docker compose config --quiet
 docker compose pull
+
+# 管理后台会按这个兼容标签创建客户端。务必在 pull 之后构建并覆盖该标签。
+docker build \
+  --build-arg VERSION="$(git -C ../.. describe --tags --always --dirty)" \
+  -t openchat-wx:local ../..
+docker tag openchat-wx:local \
+  registry.cn-shenzhen.aliyuncs.com/houhou/wechat-robot-client:latest
+
 docker compose up -d
 docker compose ps
 ```
+
+管理后端当前把动态客户端镜像名固定为
+`registry.cn-shenzhen.aliyuncs.com/houhou/wechat-robot-client:latest`。上面的最后一条
+`docker tag` 只是提供兼容名称，镜像中的 `/app/openchat-wx` 仍来自当前仓库源码。如果先
+构建再执行 `docker compose pull`，本地兼容标签会被官方镜像覆盖，因此顺序不能颠倒。
 
 首次启动 MySQL 可能需要 1 到 3 分钟。查看整体日志：
 
@@ -176,6 +189,10 @@ https://127.0.0.1:8443/
 6. 等待后台状态变为“在线”；
 7. 同步联系人和群聊。
 
+登录成功后的配置入口不是机器人名称或头像：在机器人卡片底部操作区点击最左侧的设备形
+图标，打开机器人详情；进入“联系人”，找到目标群并点击“群聊设置”。灯泡图标的作用是
+重启客户端，不是设置入口。
+
 机器人实例由管理后端动态创建，容器名称通常为：
 
 ```text
@@ -203,6 +220,101 @@ Model:    中转站实际支持的模型名
 ```
 
 请先用中转站的 `/models` 或最小对话请求确认密钥和模型可用，再保存到机器人配置。
+
+### 模型继承规则
+
+`openchat-wx` 不锁定任何模型厂商。聊天、识图、绘图和群聊总结均可使用第三方
+OpenAI 兼容中转站，实际选择顺序如下：
+
+| 能力 | 地址和密钥 | 模型 |
+| --- | --- | --- |
+| 聊天 | 群聊/好友设置优先，空值回退全局聊天配置 | `chat_model` |
+| 识图与表情理解 | 复用同层聊天 Base URL 和 API Key | `image_recognition_model` |
+| 绘图 | `image_ai_settings` 可单独配置；空地址或密钥回退聊天配置 | `image_ai_settings.model` |
+| 群聊总结 | 群设置优先，空值回退全局聊天地址、密钥和总结模型 | `chat_room_summary_model` |
+
+兼容接口要求：聊天、识图和群聊总结需要 `/chat/completions`，绘图需要
+`/images/generations`。绘图结果同时支持 URL 与 `b64_json`。模型名称必须使用中转站
+实际公布的名称，不能只填写网页中的显示名。
+
+### 自定义绘图模型
+
+在管理后台的绘图设置 JSON 中可使用平铺格式：
+
+```json
+{
+  "base_url": "https://your-provider.example/v1",
+  "api_key": "your-api-key",
+  "model": "your-image-model",
+  "size": "1024x1024",
+  "quality": "high",
+  "response_format": "b64_json"
+}
+```
+
+也兼容带命名空间的格式，键名可为 `openai_compatible`、`openai-compatible` 或
+`custom`：
+
+```json
+{
+  "openai_compatible": {
+    "base_url": "https://your-provider.example/v1",
+    "api_key": "your-api-key",
+    "model": "your-image-model",
+    "size": "1024x1024"
+  }
+}
+```
+
+如绘图和聊天使用同一中转站，可以省略 `base_url` 与 `api_key`，只填写 `model`。
+启用绘图后，可以发送“帮我画一张雨夜霓虹街道”或“生成图片：极简产品海报”。
+
+### 识图与表情理解
+
+填写 `image_recognition_model` 后，引用一张已上传到 OSS 的图片或表情包并向机器人
+提问，客户端会把图片 URL 作为 OpenAI 多模态消息交给该模型，再把识别结果加入当前
+对话上下文。识图模型与聊天模型可以不同，但使用同一层级的 Base URL 和 API Key。
+
+图片和表情理解依赖机器人 OSS 设置中的“自动上传图片”；未启用时，微信加密媒体没有
+中转站可访问的 URL，客户端会明确提示上传配置缺失。
+
+### 表情包复用
+
+客户端会把当前会话历史中收到的原生微信表情作为本地素材池，不复制到公共素材库，也不
+跨群共享。可发送“来个表情包”“发个开心表情包”“整张梗图”或“斗图”；客户端优先按
+表情 XML 自带描述匹配，没有语义描述时会稳定选择最近素材，并通过微信原生表情接口发送。
+引用表情向机器人提问时，则继续使用上面的自定义识图模型理解其文字、主体与情绪。
+
+### 群聊自由回复
+
+自由回复用于处理未 @ 机器人、也没有显式关键词的自然群聊消息。它不会覆盖明确触发：
+优先级固定为 `@机器人` → `群/全局触发词` → `自由回复`。可通过全局设置或群设置 API
+配置以下字段：
+
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `free_reply_enabled` | boolean | `false` | 是否启用 |
+| `free_reply_level` | string | `normal` | `active`、`normal` 或 `cautious` |
+| `free_reply_cooldown_seconds` | integer | `60` | 同一群两次自然回复的最短间隔 |
+| `free_reply_daily_limit` | integer | `30` | 单群每日上限；`0` 表示不设上限 |
+
+本地评分会优先识别问句、公开求助和群体邀请，并抑制 URL、命令、XML、过短或过长文本；
+边界消息使用稳定抽样，避免重启后随机行为大幅变化。自由回复不会自动 @ 发言人，显式
+触发仍保持原有 @ 回复行为。建议先用 `cautious` 在测试群观察，再逐步调整到 `normal`。
+
+### 手动运行群聊总结
+
+定时总结默认处理昨天的消息。配置完成后，也可以调用客户端内部 API 对最近 24 小时做
+一次手动验收；它会复用该群的 Base URL、API Key、`chat_room_summary_model` 和输出模式：
+
+```bash
+curl -X POST http://CLIENT_HOST:9000/api/v1/robot/chat-room/summary/run \
+  -H 'Content-Type: application/json' \
+  -d '{"chat_room_id":"ROOM_ID@chatroom"}'
+```
+
+可选传入 Unix 秒级时间戳 `start_time` 与 `end_time`，时间范围最多 7 天。为避免低质量
+报告，现有总结逻辑要求时间范围内至少有 100 条消息；调用成功后总结会直接发送到目标群。
 
 ### Docker 中的 localhost
 
@@ -294,6 +406,28 @@ docker build \
   -t openchat-wx:local .
 ```
 
+默认使用兼容的官方客户端运行层来提供 Chromium、字体和时区数据，也可以显式覆盖：
+
+```bash
+docker build \
+  --build-arg RUNTIME_IMAGE=registry.cn-shenzhen.aliyuncs.com/houhou/wechat-robot-client:latest \
+  -t openchat-wx:local .
+```
+
+`RUNTIME_IMAGE` 只提供 Chromium、字体、时区等运行依赖，最终运行的仍是本仓库构建出的
+`/app/openchat-wx`。
+
+要让管理后台之后新建的机器人自动使用本地源码镜像，还需要添加兼容标签：
+
+```bash
+docker tag openchat-wx:local \
+  registry.cn-shenzhen.aliyuncs.com/houhou/wechat-robot-client:latest
+```
+
+管理后台里的“更新镜像”会重新拉取上游官方镜像并覆盖此标签。若误点，重新执行构建与
+`docker tag`；已经运行的客户端需要停止并重新创建，单纯重启不会切换镜像层。数据库、
+微信登录数据和 Skills 都在外部服务或挂载目录中，重新创建客户端前仍建议先备份。
+
 检查镜像：
 
 ```bash
@@ -311,10 +445,19 @@ git pull --ff-only
 cd .deploy/local
 docker compose config --quiet
 docker compose pull
+
+docker build \
+  --build-arg VERSION="$(git -C ../.. describe --tags --always --dirty)" \
+  -t openchat-wx:local ../..
+docker tag openchat-wx:local \
+  registry.cn-shenzhen.aliyuncs.com/houhou/wechat-robot-client:latest
+
 docker compose up -d
 ```
 
-客户端启动时会执行数据库自动迁移。不要跨多个大版本跳跃升级；升级后先检查日志和机器人在线状态。
+客户端启动时会执行数据库自动迁移。已有客户端仍绑定旧镜像层，需要在管理后台先停止并
+移除“客户端容器”，再重新启动客户端；不要删除机器人实例或协议服务端。不要跨多个大
+版本跳跃升级，升级后先检查日志和机器人在线状态。
 
 ## 停止与重启
 
@@ -415,7 +558,10 @@ docker run --rm curlimages/curl:latest \
 
 ```bash
 docker run --rm -v "$PWD:/src" -w /src golang:1.25.8 \
-  go test ./...
+  go test ./... -run '^$' -count=0
+
+docker run --rm -v "$PWD:/src" -w /src golang:1.25.8 \
+  go test ./service ./pkg/mcp ./utils -count=1
 
 docker build -t openchat-wx:test .
 
@@ -435,6 +581,8 @@ git clone https://github.com/xiaoguiwucan/openchat-wx.git "$tmp_dir/openchat-wx"
 cd "$tmp_dir/openchat-wx"
 
 docker build -t openchat-wx:fresh-clone .
+docker tag openchat-wx:fresh-clone \
+  registry.cn-shenzhen.aliyuncs.com/houhou/wechat-robot-client:latest
 docker compose -f .deploy/local/docker-compose.yml \
   --env-file .deploy/local/.env.example config --quiet
 ```

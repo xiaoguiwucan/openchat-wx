@@ -104,6 +104,7 @@ func RegisterRouter(r *gin.Engine) error {
 
 	// 群聊相关接口
 	api.POST("/robot/chat-room/members/sync", chatRoomCtl.SyncChatRoomMember)
+	api.POST("/robot/chat-room/summary/run", chatRoomCtl.RunChatRoomSummary)
 	api.GET("/robot/chat-room/members", chatRoomCtl.GetChatRoomMembers)
 	api.GET("/robot/chat-room/member", chatRoomCtl.GetChatRoomMember)
 	api.GET("/robot/chat-room/not-left-members", chatRoomCtl.GetNotLeftMembers)

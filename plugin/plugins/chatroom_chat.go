@@ -2,6 +2,7 @@ package plugins
 
 import (
 	"log"
+
 	"github.com/xiaoguiwucan/openchat-wx/interface/plugin"
 )
 
@@ -33,6 +34,12 @@ func (p *ChatRoomAIChatPlugin) PostAction(ctx *plugin.MessageContext) {
 
 func (p *ChatRoomAIChatPlugin) Run(ctx *plugin.MessageContext) {
 	if !p.PreAction(ctx) {
+		return
+	}
+	if trySendSticker(ctx) {
+		return
+	}
+	if tryGenerateImage(ctx) {
 		return
 	}
 	isAIEnabled := ctx.Settings.IsAIChatEnabled()
