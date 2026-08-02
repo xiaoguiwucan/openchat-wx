@@ -21,7 +21,9 @@ type FriendSettingsService struct {
 	aiProviderRepo *repository.AIProvider
 	globalSettings *model.GlobalSettings
 	friendSettings *model.FriendSettings
-	aiProvider     *model.AIProvider
+	chatProvider   *model.AIProvider
+	visionProvider *model.AIProvider
+	imageProvider  *model.AIProvider
 	sender         *model.Contact
 }
 
@@ -49,19 +51,13 @@ func (s *FriendSettingsService) InitByMessage(message *model.Message) error {
 		return err
 	}
 	s.friendSettings = friendSettings
-	providerID := globalSettings.AIProviderID
-	if friendSettings != nil && friendSettings.AIProviderID != nil {
-		providerID = friendSettings.AIProviderID
+	var overrideID *int64
+	if friendSettings != nil {
+		overrideID = friendSettings.AIProviderID
 	}
-	if providerID != nil && *providerID > 0 {
-		provider, providerErr := s.aiProviderRepo.GetByID(*providerID)
-		if providerErr != nil {
-			return providerErr
-		}
-		if provider == nil || !provider.Enabled {
-			return fmt.Errorf("所选模型渠道不存在或已停用: %d", *providerID)
-		}
-		s.aiProvider = provider
+	s.chatProvider, s.visionProvider, s.imageProvider, err = ResolveAIProviders(s.ctx, globalSettings, overrideID)
+	if err != nil {
+		return fmt.Errorf("加载模型渠道失败: %w", err)
 	}
 	contact, err := s.contactRepo.GetContact(message.FromWxID)
 	if err != nil {
@@ -131,7 +127,7 @@ func (s *FriendSettingsService) GetAIConfig() settings.AIConfig {
 			aiConfig.TTSSettings = s.friendSettings.TTSSettings
 		}
 	}
-	ApplyAIProvider(&aiConfig, s.aiProvider)
+	ApplyAIProviders(&aiConfig, s.chatProvider, s.visionProvider, s.imageProvider)
 	aiConfig.BaseURL = utils.NormalizeAIBaseURL(aiConfig.BaseURL)
 	return aiConfig
 }

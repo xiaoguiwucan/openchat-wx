@@ -552,6 +552,7 @@ const Contact = (props: IProps) => {
 				<FriendSettings
 					open={friendSettingsState.open}
 					robotId={props.robotId}
+					robotCode={props.robot.robot_code!}
 					contact={friendSettingsState.contact!}
 					onClose={onFriendSettingsClose}
 				/>
@@ -560,6 +561,7 @@ const Contact = (props: IProps) => {
 				<ChatRoomSettings
 					open={chatRoomSettingsState.open}
 					robotId={props.robotId}
+					robotCode={props.robot.robot_code!}
 					chatRoom={chatRoomSettingsState.chatRoom!}
 					onClose={onChatRoomSettingsClose}
 				/>

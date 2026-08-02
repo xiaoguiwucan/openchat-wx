@@ -37,6 +37,9 @@ func NewSearchChatRoomMemoryTool(db *gorm.DB) OpenAITool {
 }
 
 func (t *SearchChatRoomMemoryTool) GetOpenAITool(robotCtx *robotctx.RobotContext) *openai.ChatCompletionToolUnionParam {
+	if vars.MemoryService == nil {
+		return nil
+	}
 	systemPrompt, err := t.BuildSystemPrompt(context.Background(), robotCtx)
 	if err != nil {
 		fmt.Printf("构建系统提示词失败: %v\n", err)
@@ -70,13 +73,16 @@ func (t *SearchChatRoomMemoryTool) GetOpenAITool(robotCtx *robotctx.RobotContext
 }
 
 func (t *SearchChatRoomMemoryTool) BuildSystemPrompt(ctx context.Context, robotCtx *robotctx.RobotContext) (string, error) {
-	if t.db == nil || robotCtx == nil || !strings.HasSuffix(robotCtx.FromWxID, "@chatroom") {
+	if vars.MemoryService == nil || t.db == nil || robotCtx == nil || !strings.HasSuffix(robotCtx.FromWxID, "@chatroom") {
 		return "", nil
 	}
 	return "微信群成员画像/关系查询工具", nil
 }
 
 func (t *SearchChatRoomMemoryTool) ExecuteToolCall(ctx context.Context, robotCtx *robotctx.RobotContext, toolCall openai.ChatCompletionMessageToolCallUnion) (string, bool, error) {
+	if vars.MemoryService == nil {
+		return "群成员记忆服务不可用", false, nil
+	}
 	var args chatRoomMemoryToolArgs
 	if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &args); err != nil {
 		return "", false, fmt.Errorf("解析参数失败: %w", err)

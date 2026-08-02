@@ -1,6 +1,6 @@
 import { CommentOutlined, SaveOutlined } from '@ant-design/icons';
-import { App, Button, Form, InputNumber, Select, Space, Switch, Typography } from 'antd';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { App, Button, Form, Input, InputNumber, Select, Space, Switch, Typography } from 'antd';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import ParamsGroup from '@/components/ParamsGroup';
 import { openchatAPIBase, openchatRequest } from './openchat-api';
 
@@ -10,9 +10,10 @@ interface IProps {
 
 interface FreeReplyForm {
 	free_reply_enabled: boolean;
-	free_reply_level: 'active' | 'normal' | 'cautious';
+	free_reply_level: 'active' | 'normal' | 'cautious' | 'crazy';
 	free_reply_cooldown_seconds: number;
 	free_reply_daily_limit: number;
+	chat_ai_trigger: string;
 }
 
 const FreeReplySettings = ({ robotCode }: IProps) => {
@@ -61,7 +62,8 @@ const FreeReplySettings = ({ robotCode }: IProps) => {
 			style={{ marginTop: 24, paddingBottom: 14 }}
 		>
 			<Typography.Paragraph type="secondary">
-				开启后，机器人会根据群聊内容主动判断是否参与对话，无需关键词或 @。群聊单独配置时会覆盖这里的全局设置。
+				开启后，机器人会根据群聊内容主动判断是否参与对话，无需关键词或 @。@
+				机器人和强制唤醒词始终优先响应，群聊单独配置会覆盖这里的全局设置。
 			</Typography.Paragraph>
 			<Form
 				form={form}
@@ -71,6 +73,7 @@ const FreeReplySettings = ({ robotCode }: IProps) => {
 					free_reply_level: 'normal',
 					free_reply_cooldown_seconds: 60,
 					free_reply_daily_limit: 30,
+					chat_ai_trigger: '',
 				}}
 			>
 				<Form.Item
@@ -96,9 +99,10 @@ const FreeReplySettings = ({ robotCode }: IProps) => {
 					>
 						<Select
 							options={[
-								{ label: '积极', value: 'active' },
-								{ label: '平衡', value: 'normal' },
-								{ label: '谨慎', value: 'cautious' },
+								{ label: '高频', value: 'crazy' },
+								{ label: '活跃', value: 'active' },
+								{ label: '普通', value: 'normal' },
+								{ label: '安静', value: 'cautious' },
 							]}
 						/>
 					</Form.Item>
@@ -129,6 +133,17 @@ const FreeReplySettings = ({ robotCode }: IProps) => {
 						/>
 					</Form.Item>
 				</Space>
+				<Form.Item
+					name="chat_ai_trigger"
+					label="强制唤醒词（可选）"
+					tooltip="消息以该词开头时一定触发 AI，不受自由回复频率、冷却或每日上限影响"
+				>
+					<Input
+						allowClear
+						maxLength={20}
+						placeholder="例如：小风。留空仍可通过 @ 或自由回复触发"
+					/>
+				</Form.Item>
 				<Button
 					type="primary"
 					icon={<SaveOutlined />}

@@ -6213,6 +6213,13 @@
 		"dto.GetChatRoomSettingsResponse": {
 			"type": "object",
 			"properties": {
+				"ai_provider_id": {
+					"description": "兼容旧群聊配置的默认渠道",
+					"type": "integer"
+				},
+				"chat_ai_provider_id": {
+					"type": "integer"
+				},
 				"chat_ai_enabled": {
 					"type": "boolean"
 				},
@@ -6243,6 +6250,18 @@
 				"chat_room_summary_model": {
 					"type": "string"
 				},
+				"free_reply_cooldown_seconds": {
+					"type": "integer"
+				},
+				"free_reply_daily_limit": {
+					"type": "integer"
+				},
+				"free_reply_enabled": {
+					"type": "boolean"
+				},
+				"free_reply_level": {
+					"type": "string"
+				},
 				"id": {
 					"type": "integer"
 				},
@@ -6253,8 +6272,17 @@
 					"type": "object",
 					"additionalProperties": {}
 				},
+				"image_generation_model": {
+					"type": "string"
+				},
+				"image_generation_provider_id": {
+					"type": "integer"
+				},
 				"image_recognition_model": {
 					"type": "string"
+				},
+				"image_recognition_provider_id": {
+					"type": "integer"
 				},
 				"knowledge_categories": {
 					"type": "array",
@@ -6307,6 +6335,9 @@
 				},
 				"short_video_parsing_enabled": {
 					"type": "boolean"
+				},
+				"summary_ai_provider_id": {
+					"type": "integer"
 				},
 				"tts_enabled": {
 					"type": "boolean"
@@ -6473,6 +6504,13 @@
 		"dto.GetGlobalSettingsResponse": {
 			"type": "object",
 			"properties": {
+				"ai_provider_id": {
+					"description": "兼容旧配置的全局默认渠道",
+					"type": "integer"
+				},
+				"chat_ai_provider_id": {
+					"type": "integer"
+				},
 				"chat_ai_enabled": {
 					"type": "boolean"
 				},
@@ -6518,11 +6556,26 @@
 				"friend_sync_cron": {
 					"type": "string"
 				},
+				"free_reply_cooldown_seconds": {
+					"type": "integer"
+				},
+				"free_reply_daily_limit": {
+					"type": "integer"
+				},
+				"free_reply_enabled": {
+					"type": "boolean"
+				},
+				"free_reply_level": {
+					"type": "string"
+				},
 				"id": {
 					"type": "integer"
 				},
 				"image_ai_enabled": {
 					"type": "boolean"
+				},
+				"image_generation_provider_id": {
+					"type": "integer"
 				},
 				"image_ai_settings": {
 					"type": "object",
@@ -6542,6 +6595,9 @@
 				},
 				"image_recognition_model": {
 					"type": "string"
+				},
+				"image_recognition_provider_id": {
+					"type": "integer"
 				},
 				"leave_chat_room_alert_enabled": {
 					"type": "boolean"
@@ -6587,6 +6643,12 @@
 				},
 				"text_embedding_model": {
 					"type": "string"
+				},
+				"text_embedding_provider_id": {
+					"type": "integer"
+				},
+				"summary_ai_provider_id": {
+					"type": "integer"
 				},
 				"tts_enabled": {
 					"type": "boolean"
@@ -8970,6 +9032,13 @@
 			"type": "object",
 			"required": ["id"],
 			"properties": {
+				"ai_provider_id": {
+					"description": "兼容旧群聊配置的默认渠道",
+					"type": "integer"
+				},
+				"chat_ai_provider_id": {
+					"type": "integer"
+				},
 				"chat_ai_enabled": {
 					"type": "boolean"
 				},
@@ -9006,6 +9075,18 @@
 				"config_id": {
 					"type": "integer"
 				},
+				"free_reply_cooldown_seconds": {
+					"type": "integer"
+				},
+				"free_reply_daily_limit": {
+					"type": "integer"
+				},
+				"free_reply_enabled": {
+					"type": "boolean"
+				},
+				"free_reply_level": {
+					"type": "string"
+				},
 				"id": {
 					"type": "integer"
 				},
@@ -9016,8 +9097,17 @@
 					"type": "object",
 					"additionalProperties": {}
 				},
+				"image_generation_model": {
+					"type": "string"
+				},
+				"image_generation_provider_id": {
+					"type": "integer"
+				},
 				"image_recognition_model": {
 					"type": "string"
+				},
+				"image_recognition_provider_id": {
+					"type": "integer"
 				},
 				"knowledge_categories": {
 					"type": "array",
@@ -9070,6 +9160,9 @@
 				},
 				"short_video_parsing_enabled": {
 					"type": "boolean"
+				},
+				"summary_ai_provider_id": {
+					"type": "integer"
 				},
 				"tts_enabled": {
 					"type": "boolean"
@@ -9167,6 +9260,13 @@
 			"type": "object",
 			"required": ["id"],
 			"properties": {
+				"ai_provider_id": {
+					"description": "兼容旧配置的全局默认渠道",
+					"type": "integer"
+				},
+				"chat_ai_provider_id": {
+					"type": "integer"
+				},
 				"chat_ai_enabled": {
 					"type": "boolean"
 				},
@@ -9218,6 +9318,9 @@
 				"image_ai_enabled": {
 					"type": "boolean"
 				},
+				"image_generation_provider_id": {
+					"type": "integer"
+				},
 				"image_ai_settings": {
 					"type": "object",
 					"additionalProperties": {}
@@ -9236,6 +9339,9 @@
 				},
 				"image_recognition_model": {
 					"type": "string"
+				},
+				"image_recognition_provider_id": {
+					"type": "integer"
 				},
 				"leave_chat_room_alert_enabled": {
 					"type": "boolean"
@@ -9281,6 +9387,12 @@
 				},
 				"text_embedding_model": {
 					"type": "string"
+				},
+				"text_embedding_provider_id": {
+					"type": "integer"
+				},
+				"summary_ai_provider_id": {
+					"type": "integer"
 				},
 				"tts_enabled": {
 					"type": "boolean"

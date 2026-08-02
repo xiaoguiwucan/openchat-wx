@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"time"
 
 	"github.com/xiaoguiwucan/openchat-wx/model"
 	"gorm.io/gorm"
@@ -49,7 +50,15 @@ func (r *AIProvider) Update(provider *model.AIProvider) error {
 		"name": provider.Name, "base_url": provider.BaseURL, "api_key": provider.APIKey,
 		"chat_model": provider.ChatModel, "image_recognition_model": provider.ImageRecognitionModel,
 		"image_generation_model": provider.ImageGenerationModel, "summary_model": provider.SummaryModel,
-		"image_size": provider.ImageSize, "image_quality": provider.ImageQuality, "enabled": provider.Enabled,
+		"image_size": provider.ImageSize, "image_quality": provider.ImageQuality,
+		"available_models": provider.AvailableModels, "models_refreshed_at": provider.ModelsRefreshedAt,
+		"enabled": provider.Enabled,
+	}).Error
+}
+
+func (r *AIProvider) UpdateModelCache(id int64, models []byte, refreshedAt time.Time) error {
+	return r.DB.WithContext(r.Ctx).Model(&model.AIProvider{}).Where("id = ?", id).Updates(map[string]any{
+		"available_models": models, "models_refreshed_at": refreshedAt,
 	}).Error
 }
 

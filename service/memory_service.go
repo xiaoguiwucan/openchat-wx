@@ -347,14 +347,19 @@ func (s *MemoryService) extractAndStore(ctx context.Context, messages []*model.M
 
 func (s *MemoryService) resolveAISettings(ctx context.Context, global *model.GlobalSettings, isChatRoom bool, chatRoomID, contactWxID string) (*model.GlobalSettings, error) {
 	resolved := *global
-	providerID := global.AIProviderID
+	providerID := providerIDOrFallback(global.ChatAIProviderID, global.AIProviderID)
 	if isChatRoom {
 		room, err := s.crsRepo.GetChatRoomSettings(chatRoomID)
 		if err != nil {
 			return nil, err
 		}
-		if room != nil && room.AIProviderID != nil {
-			providerID = room.AIProviderID
+		if room != nil {
+			providerID, _, _ = resolveAIProviderIDsForTarget(
+				global, room.AIProviderID, room.ChatAIProviderID, nil, nil,
+			)
+			if room.ChatModel != nil && strings.TrimSpace(*room.ChatModel) != "" {
+				resolved.ChatModel = strings.TrimSpace(*room.ChatModel)
+			}
 		}
 	} else {
 		friend, err := s.fsRepo.GetFriendSettings(contactWxID)
@@ -363,6 +368,9 @@ func (s *MemoryService) resolveAISettings(ctx context.Context, global *model.Glo
 		}
 		if friend != nil && friend.AIProviderID != nil {
 			providerID = friend.AIProviderID
+		}
+		if friend != nil && friend.ChatModel != nil && strings.TrimSpace(*friend.ChatModel) != "" {
+			resolved.ChatModel = strings.TrimSpace(*friend.ChatModel)
 		}
 	}
 
@@ -373,7 +381,9 @@ func (s *MemoryService) resolveAISettings(ctx context.Context, global *model.Glo
 	if provider != nil {
 		resolved.ChatBaseURL = utils.NormalizeAIBaseURL(provider.BaseURL)
 		resolved.ChatAPIKey = provider.APIKey
-		resolved.ChatModel = provider.ChatModel
+		if resolved.ChatModel == "" {
+			resolved.ChatModel = provider.ChatModel
+		}
 	}
 	return &resolved, nil
 }

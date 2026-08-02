@@ -1,6 +1,8 @@
 package service
 
 import (
+	"errors"
+	"io"
 	"testing"
 
 	"github.com/xiaoguiwucan/openchat-wx/interface/settings"
@@ -31,6 +33,23 @@ func TestParseImageGenerationConfig(t *testing.T) {
 	}
 }
 
+func TestIsTransientImageGenerationError(t *testing.T) {
+	tests := []struct {
+		err  error
+		want bool
+	}{
+		{err: io.ErrUnexpectedEOF, want: true},
+		{err: errors.New("AI endpoint returned HTTP 502: bad gateway"), want: true},
+		{err: errors.New("connection reset by peer"), want: true},
+		{err: errors.New("AI endpoint returned HTTP 400: invalid model"), want: false},
+	}
+	for _, tt := range tests {
+		if got := isTransientImageGenerationError(tt.err); got != tt.want {
+			t.Fatalf("isTransientImageGenerationError(%q) = %v, want %v", tt.err, got, tt.want)
+		}
+	}
+}
+
 func TestParseImageGenerationConfigFallsBackToChatProvider(t *testing.T) {
 	config, err := parseImageGenerationConfig(settings.AIConfig{
 		BaseURL:         "https://chat.example/v1",
@@ -42,5 +61,23 @@ func TestParseImageGenerationConfigFallsBackToChatProvider(t *testing.T) {
 	}
 	if config.BaseURL != "https://chat.example/v1" || config.APIKey != "chat-key" {
 		t.Fatalf("chat provider fallback failed: %+v", config)
+	}
+}
+
+func TestParseImageGenerationConfigOmitsAutoPlaceholders(t *testing.T) {
+	config, err := parseImageGenerationConfig(settings.AIConfig{
+		BaseURL: "https://image.example/v1",
+		APIKey:  "image-key",
+		ImageAISettings: datatypes.JSON(`{
+			"model":"image-model",
+			"quality":"auto",
+			"response_format":"AUTO"
+		}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Quality != "" || config.ResponseFormat != "" {
+		t.Fatalf("auto placeholders must be omitted, got quality=%q response_format=%q", config.Quality, config.ResponseFormat)
 	}
 }

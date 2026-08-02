@@ -21,12 +21,12 @@ func NewOSSSettingsRepo(ctx context.Context, db *gorm.DB) *OSSSettings {
 
 func (respo *OSSSettings) GetOSSSettings() (*model.OSSSettings, error) {
 	var ossSettings model.OSSSettings
-	err := respo.DB.WithContext(respo.Ctx).First(&ossSettings).Error
-	if err == gorm.ErrRecordNotFound {
-		return nil, nil
+	result := respo.DB.WithContext(respo.Ctx).Limit(1).Find(&ossSettings)
+	if result.Error != nil {
+		return nil, result.Error
 	}
-	if err != nil {
-		return nil, err
+	if result.RowsAffected == 0 {
+		return nil, nil
 	}
 	return &ossSettings, nil
 }

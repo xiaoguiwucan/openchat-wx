@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"regexp"
@@ -14,6 +15,7 @@ import (
 	"github.com/xiaoguiwucan/openchat-wx/repository"
 	"github.com/xiaoguiwucan/openchat-wx/utils"
 	"github.com/xiaoguiwucan/openchat-wx/vars"
+	"gorm.io/datatypes"
 )
 
 type ChatRoomSettingsService struct {
@@ -21,10 +23,11 @@ type ChatRoomSettingsService struct {
 	Message          *model.Message
 	gsRepo           *repository.GlobalSettings
 	crsRepo          *repository.ChatRoomSettings
-	aiProviderRepo   *repository.AIProvider
 	globalSettings   *model.GlobalSettings
 	chatRoomSettings *model.ChatRoomSettings
-	aiProvider       *model.AIProvider
+	chatProvider     *model.AIProvider
+	visionProvider   *model.AIProvider
+	imageProvider    *model.AIProvider
 	isFreeReply      bool
 }
 
@@ -32,10 +35,9 @@ var _ settings.Settings = (*ChatRoomSettingsService)(nil)
 
 func NewChatRoomSettingsService(ctx context.Context) *ChatRoomSettingsService {
 	return &ChatRoomSettingsService{
-		ctx:            ctx,
-		gsRepo:         repository.NewGlobalSettingsRepo(ctx, vars.DB),
-		crsRepo:        repository.NewChatRoomSettingsRepo(ctx, vars.DB),
-		aiProviderRepo: repository.NewAIProviderRepo(ctx, vars.DB),
+		ctx:     ctx,
+		gsRepo:  repository.NewGlobalSettingsRepo(ctx, vars.DB),
+		crsRepo: repository.NewChatRoomSettingsRepo(ctx, vars.DB),
 	}
 }
 
@@ -55,19 +57,18 @@ func (s *ChatRoomSettingsService) InitByMessage(message *model.Message) error {
 		return err
 	}
 	s.chatRoomSettings = chatRoomSettings
-	providerID := globalSettings.AIProviderID
-	if chatRoomSettings != nil && chatRoomSettings.AIProviderID != nil {
-		providerID = chatRoomSettings.AIProviderID
+	var legacyOverrideID, chatOverrideID, visionOverrideID, imageOverrideID *int64
+	if chatRoomSettings != nil {
+		legacyOverrideID = chatRoomSettings.AIProviderID
+		chatOverrideID = chatRoomSettings.ChatAIProviderID
+		visionOverrideID = chatRoomSettings.ImageRecognitionProviderID
+		imageOverrideID = chatRoomSettings.ImageGenerationProviderID
 	}
-	if providerID != nil && *providerID > 0 {
-		provider, providerErr := s.aiProviderRepo.GetByID(*providerID)
-		if providerErr != nil {
-			return providerErr
-		}
-		if provider == nil || !provider.Enabled {
-			return fmt.Errorf("所选模型渠道不存在或已停用: %d", *providerID)
-		}
-		s.aiProvider = provider
+	s.chatProvider, s.visionProvider, s.imageProvider, err = ResolveAIProvidersForTarget(
+		s.ctx, globalSettings, legacyOverrideID, chatOverrideID, visionOverrideID, imageOverrideID,
+	)
+	if err != nil {
+		return fmt.Errorf("加载模型渠道失败: %w", err)
 	}
 	return nil
 }
@@ -123,7 +124,24 @@ func (s *ChatRoomSettingsService) GetAIConfig() settings.AIConfig {
 			aiConfig.MaxCompletionTokens = *s.chatRoomSettings.MaxCompletionTokens
 		}
 		if s.chatRoomSettings.ImageAISettings != nil {
-			aiConfig.ImageAISettings = s.chatRoomSettings.ImageAISettings
+			mergedImageSettings := map[string]any{}
+			_ = json.Unmarshal(aiConfig.ImageAISettings, &mergedImageSettings)
+			roomImageSettings := map[string]any{}
+			_ = json.Unmarshal(s.chatRoomSettings.ImageAISettings, &roomImageSettings)
+			for key, value := range roomImageSettings {
+				mergedImageSettings[key] = value
+			}
+			if encoded, err := json.Marshal(mergedImageSettings); err == nil {
+				aiConfig.ImageAISettings = datatypes.JSON(encoded)
+			}
+		}
+		if s.chatRoomSettings.ImageGenerationModel != nil && strings.TrimSpace(*s.chatRoomSettings.ImageGenerationModel) != "" {
+			imageSettings := map[string]any{}
+			_ = json.Unmarshal(aiConfig.ImageAISettings, &imageSettings)
+			imageSettings["model"] = strings.TrimSpace(*s.chatRoomSettings.ImageGenerationModel)
+			if encoded, err := json.Marshal(imageSettings); err == nil {
+				aiConfig.ImageAISettings = datatypes.JSON(encoded)
+			}
 		}
 		if s.chatRoomSettings.TTSModel != nil && *s.chatRoomSettings.TTSModel != "" {
 			aiConfig.TTSModel = *s.chatRoomSettings.TTSModel
@@ -132,8 +150,15 @@ func (s *ChatRoomSettingsService) GetAIConfig() settings.AIConfig {
 			aiConfig.TTSSettings = s.chatRoomSettings.TTSSettings
 		}
 	}
-	ApplyAIProvider(&aiConfig, s.aiProvider)
+	ApplyAIProviders(&aiConfig, s.chatProvider, s.visionProvider, s.imageProvider)
 	aiConfig.BaseURL = utils.NormalizeAIBaseURL(aiConfig.BaseURL)
+	if s.Message != nil {
+		chatProviderName := "legacy"
+		if s.chatProvider != nil {
+			chatProviderName = s.chatProvider.Name
+		}
+		log.Printf("[AIConfig] from=%s chat_provider=%s chat_model=%s", s.Message.FromWxID, chatProviderName, aiConfig.Model)
+	}
 	return aiConfig
 }
 
@@ -369,16 +394,149 @@ func (s *ChatRoomSettingsService) GetAllEnableNews() ([]*model.ChatRoomSettings,
 }
 
 func (s *ChatRoomSettingsService) SaveChatRoomSettings(data *model.ChatRoomSettings) error {
+	if data == nil || strings.TrimSpace(data.ChatRoomID) == "" {
+		return errors.New("群聊 ID 不能为空")
+	}
+	if err := s.validateAIProviderSelections(data); err != nil {
+		return err
+	}
+	if err := validateFreeReplySettings(data); err != nil {
+		return err
+	}
 	if err := s.normalizeKnowledgeCategories(data); err != nil {
 		return err
 	}
 	if err := s.normalizeMemoryExtractionBlacklist(data); err != nil {
 		return err
 	}
-	if data.ID == 0 {
-		return s.crsRepo.Create(data)
+	return s.crsRepo.SaveByChatRoomID(data)
+}
+
+func (s *ChatRoomSettingsService) validateAIProviderSelections(data *model.ChatRoomSettings) error {
+	if data == nil {
+		return nil
 	}
-	return s.crsRepo.Update(data)
+	global, err := s.gsRepo.GetGlobalSettings()
+	if err != nil {
+		return err
+	}
+	if global == nil {
+		return errors.New("全局设置不存在")
+	}
+	var existing *model.ChatRoomSettings
+	if data.ChatRoomID != "" {
+		existing, err = s.crsRepo.GetChatRoomSettings(data.ChatRoomID)
+		if err != nil {
+			return err
+		}
+	}
+	providerSelection := func(requested *int64, existingValue func(*model.ChatRoomSettings) *int64) *int64 {
+		if requested != nil {
+			return requested
+		}
+		if existing != nil {
+			return existingValue(existing)
+		}
+		return nil
+	}
+	modelSelection := func(requested *string, existingValue func(*model.ChatRoomSettings) *string, globalValue string) string {
+		if requested != nil {
+			if value := strings.TrimSpace(*requested); value != "" {
+				return value
+			}
+			return strings.TrimSpace(globalValue)
+		}
+		if existing != nil {
+			if value := existingValue(existing); value != nil && strings.TrimSpace(*value) != "" {
+				return strings.TrimSpace(*value)
+			}
+		}
+		return strings.TrimSpace(globalValue)
+	}
+	legacyProviderID := providerSelection(data.AIProviderID, func(row *model.ChatRoomSettings) *int64 { return row.AIProviderID })
+	chatOverrideID := providerSelection(data.ChatAIProviderID, func(row *model.ChatRoomSettings) *int64 { return row.ChatAIProviderID })
+	visionOverrideID := providerSelection(data.ImageRecognitionProviderID, func(row *model.ChatRoomSettings) *int64 {
+		return row.ImageRecognitionProviderID
+	})
+	imageOverrideID := providerSelection(data.ImageGenerationProviderID, func(row *model.ChatRoomSettings) *int64 {
+		return row.ImageGenerationProviderID
+	})
+	chatProviderID, visionProviderID, imageProviderID := resolveAIProviderIDsForTarget(
+		global, legacyProviderID, chatOverrideID, visionOverrideID, imageOverrideID,
+	)
+	summaryProviderID := providerIDOrFallback(global.SummaryAIProviderID, global.AIProviderID)
+	summaryOverrideID := providerSelection(data.SummaryAIProviderID, func(row *model.ChatRoomSettings) *int64 {
+		return row.SummaryAIProviderID
+	})
+	if summaryOverrideID != nil && *summaryOverrideID > 0 {
+		summaryProviderID = summaryOverrideID
+	}
+	globalImageModel := ""
+	if len(global.ImageAISettings) > 0 {
+		imageSettings := map[string]any{}
+		_ = json.Unmarshal(global.ImageAISettings, &imageSettings)
+		globalImageModel, _ = imageSettings["model"].(string)
+	}
+	selections := []struct {
+		label              string
+		providerID         *int64
+		modelName          string
+		explicitProviderID *int64
+		explicitModelName  *string
+		setProviderID      func(*int64)
+	}{
+		{label: "AI回复", providerID: chatProviderID, modelName: modelSelection(data.ChatModel, func(row *model.ChatRoomSettings) *string { return row.ChatModel }, global.ChatModel), explicitProviderID: data.ChatAIProviderID, explicitModelName: data.ChatModel, setProviderID: func(id *int64) { data.ChatAIProviderID = id }},
+		{label: "图像识别", providerID: visionProviderID, modelName: modelSelection(data.ImageRecognitionModel, func(row *model.ChatRoomSettings) *string { return row.ImageRecognitionModel }, global.ImageRecognitionModel), explicitProviderID: data.ImageRecognitionProviderID, explicitModelName: data.ImageRecognitionModel, setProviderID: func(id *int64) { data.ImageRecognitionProviderID = id }},
+		{label: "AI绘图", providerID: imageProviderID, modelName: modelSelection(data.ImageGenerationModel, func(row *model.ChatRoomSettings) *string { return row.ImageGenerationModel }, globalImageModel), explicitProviderID: data.ImageGenerationProviderID, explicitModelName: data.ImageGenerationModel, setProviderID: func(id *int64) { data.ImageGenerationProviderID = id }},
+		{label: "群聊总结", providerID: summaryProviderID, modelName: modelSelection(data.ChatRoomSummaryModel, func(row *model.ChatRoomSettings) *string { return row.ChatRoomSummaryModel }, global.ChatRoomSummaryModel), explicitProviderID: data.SummaryAIProviderID, explicitModelName: data.ChatRoomSummaryModel, setProviderID: func(id *int64) { data.SummaryAIProviderID = id }},
+	}
+	for _, selection := range selections {
+		if selection.explicitProviderID != nil && *selection.explicitProviderID > 0 &&
+			(selection.explicitModelName == nil || strings.TrimSpace(*selection.explicitModelName) == "") {
+			return fmt.Errorf("选择%s渠道后必须选择模型", selection.label)
+		}
+		if selection.providerID == nil || *selection.providerID <= 0 || selection.modelName == "" {
+			continue
+		}
+		provider, err := NewAIProviderService(s.ctx).GetEnabledByID(selection.providerID)
+		if err != nil || provider == nil {
+			return fmt.Errorf("%s渠道不存在或已停用", selection.label)
+		}
+		if validationErr := ValidateAIProviderModel(provider, selection.modelName, selection.label); validationErr != nil {
+			matchedProvider, matchErr := NewAIProviderService(s.ctx).FindUniqueEnabledProviderForModel(selection.modelName)
+			if matchErr != nil {
+				return matchErr
+			}
+			if matchedProvider == nil {
+				return validationErr
+			}
+			matchedProviderID := matchedProvider.ID
+			selection.setProviderID(&matchedProviderID)
+			log.Printf("[AIProviderRepair] room=%s capability=%s model=%s provider=%s", data.ChatRoomID, selection.label, selection.modelName, matchedProvider.Name)
+		}
+	}
+	return nil
+}
+
+func validateFreeReplySettings(data *model.ChatRoomSettings) error {
+	if data == nil || data.FreeReplyEnabled == nil || !*data.FreeReplyEnabled {
+		return nil
+	}
+	if data.FreeReplyLevel == nil {
+		return errors.New("自由回复参与频率不能为空")
+	}
+	level := strings.ToLower(strings.TrimSpace(*data.FreeReplyLevel))
+	if level != "active" && level != "normal" && level != "cautious" && level != "crazy" {
+		return errors.New("自由回复参与频率参数错误")
+	}
+	data.FreeReplyLevel = &level
+	if data.FreeReplyCooldownSeconds == nil || *data.FreeReplyCooldownSeconds < 0 {
+		return errors.New("自由回复冷却时间不能小于0")
+	}
+	if data.FreeReplyDailyLimit == nil || *data.FreeReplyDailyLimit < 0 {
+		return errors.New("自由回复每日上限不能小于0")
+	}
+	return nil
 }
 
 func normalizeKnowledgeCategoryCodes(codes []string) []string {

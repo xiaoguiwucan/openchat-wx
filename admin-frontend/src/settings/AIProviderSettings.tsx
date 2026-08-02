@@ -4,19 +4,36 @@ import {
 	DeleteOutlined,
 	EditOutlined,
 	PlusOutlined,
+	ReloadOutlined,
 	ThunderboltOutlined,
 } from '@ant-design/icons';
-import { App, Button, Form, Input, Modal, Popconfirm, Space, Switch, Table, Tag, Tooltip, Typography } from 'antd';
+import {
+	App,
+	AutoComplete,
+	Button,
+	Form,
+	Input,
+	Modal,
+	Popconfirm,
+	Space,
+	Switch,
+	Table,
+	Tag,
+	Tooltip,
+	Typography,
+} from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import ParamsGroup from '@/components/ParamsGroup';
 import { openchatAPIBase, openchatRequest } from './openchat-api';
 
 interface IProps {
 	robotCode: string;
+	onProvidersChange?: (providers: AIProvider[]) => void;
+	onProviderMutation?: () => void;
 }
 
-interface AIProvider {
+export interface AIProvider {
 	id: number;
 	name: string;
 	base_url: string;
@@ -28,8 +45,11 @@ interface AIProvider {
 	summary_model: string;
 	image_size: string;
 	image_quality: string;
+	available_models: string[];
+	models_refreshed_at?: string;
 	enabled: boolean;
 	global_selected: boolean;
+	target_selected: boolean;
 }
 
 interface AIProviderForm {
@@ -42,16 +62,19 @@ interface AIProviderForm {
 	summary_model?: string;
 	image_size?: string;
 	image_quality?: string;
+	available_models?: string[];
 	enabled: boolean;
 }
 
-const AIProviderSettings = ({ robotCode }: IProps) => {
+const AIProviderSettings = ({ robotCode, onProvidersChange, onProviderMutation }: IProps) => {
 	const { message } = App.useApp();
 	const [form] = Form.useForm<AIProviderForm>();
 	const [providers, setProviders] = useState<AIProvider[]>([]);
 	const [loading, setLoading] = useState(false);
 	const [saving, setSaving] = useState(false);
 	const [testingId, setTestingId] = useState<number>();
+	const [modelsLoading, setModelsLoading] = useState(false);
+	const [availableModels, setAvailableModels] = useState<string[]>([]);
 	const [editing, setEditing] = useState<AIProvider>();
 	const [modalOpen, setModalOpen] = useState(false);
 	const apiBase = useMemo(() => `${openchatAPIBase(robotCode)}/ai-providers`, [robotCode]);
@@ -59,13 +82,15 @@ const AIProviderSettings = ({ robotCode }: IProps) => {
 	const loadProviders = useCallback(async () => {
 		setLoading(true);
 		try {
-			setProviders(await openchatRequest<AIProvider[]>(`${apiBase}?scope=global`));
+			const nextProviders = await openchatRequest<AIProvider[]>(`${apiBase}?scope=global`);
+			setProviders(nextProviders);
+			onProvidersChange?.(nextProviders);
 		} catch (error) {
 			message.error(error instanceof Error ? error.message : '模型渠道读取失败');
 		} finally {
 			setLoading(false);
 		}
-	}, [apiBase, message]);
+	}, [apiBase, message, onProvidersChange]);
 
 	useEffect(() => {
 		void loadProviders();
@@ -73,16 +98,69 @@ const AIProviderSettings = ({ robotCode }: IProps) => {
 
 	const openEditor = (provider?: AIProvider) => {
 		setEditing(provider);
+		setAvailableModels(
+			provider
+				? Array.from(
+						new Set(
+							[
+								...(provider.available_models || []),
+								provider.chat_model,
+								provider.image_recognition_model,
+								provider.image_generation_model,
+								provider.summary_model,
+							].filter(Boolean),
+						),
+					)
+				: [],
+		);
 		form.resetFields();
 		form.setFieldsValue(
 			provider
 				? {
 						...provider,
 						api_key: undefined,
-				  }
+					}
 				: { enabled: true, image_size: '1024x1024', image_quality: '' },
 		);
 		setModalOpen(true);
+	};
+
+	const fetchModels = async () => {
+		const values = form.getFieldsValue(['base_url', 'api_key']);
+		try {
+			await form.validateFields(['base_url', 'api_key']);
+		} catch {
+			return;
+		}
+		setModelsLoading(true);
+		try {
+			const result = await openchatRequest<{ models: string[]; count: number; refreshed_at: string }>(
+				`${apiBase}/models`,
+				{
+					method: 'POST',
+					body: JSON.stringify({
+						provider_id: editing?.id || 0,
+						base_url: values.base_url,
+						api_key: values.api_key || '',
+					}),
+				},
+			);
+			setAvailableModels(result.models);
+			if (editing) {
+				setProviders(current =>
+					current.map(provider =>
+						provider.id === editing.id
+							? { ...provider, available_models: result.models, models_refreshed_at: result.refreshed_at }
+							: provider,
+					),
+				);
+			}
+			message.success(`已获取 ${result.count} 个模型`);
+		} catch (error) {
+			message.error(error instanceof Error ? error.message : '模型列表获取失败');
+		} finally {
+			setModelsLoading(false);
+		}
 	};
 
 	const saveProvider = async () => {
@@ -91,12 +169,13 @@ const AIProviderSettings = ({ robotCode }: IProps) => {
 		try {
 			await openchatRequest<AIProvider>(editing ? `${apiBase}/${editing.id}` : apiBase, {
 				method: editing ? 'PUT' : 'POST',
-				body: JSON.stringify(values),
+				body: JSON.stringify({ ...values, available_models: availableModels }),
 			});
 			message.success(editing ? '模型渠道已更新' : '模型渠道已创建');
 			setModalOpen(false);
 			form.resetFields();
 			await loadProviders();
+			onProviderMutation?.();
 		} catch (error) {
 			message.error(error instanceof Error ? error.message : '模型渠道保存失败');
 		} finally {
@@ -112,10 +191,13 @@ const AIProviderSettings = ({ robotCode }: IProps) => {
 			});
 			message.success(`已将“${provider.name}”设为全局默认渠道`);
 			await loadProviders();
+			onProviderMutation?.();
 		} catch (error) {
 			message.error(error instanceof Error ? error.message : '切换渠道失败');
 		}
 	};
+
+	const modelOptions = useMemo(() => availableModels.map(model => ({ value: model })), [availableModels]);
 
 	const testProvider = async (provider: AIProvider) => {
 		setTestingId(provider.id);
@@ -182,8 +264,9 @@ const AIProviderSettings = ({ robotCode }: IProps) => {
 					<Typography.Text>对话：{provider.chat_model}</Typography.Text>
 					<Typography.Text type="secondary">
 						识图：{provider.image_recognition_model || '未配置'} · 生图：{provider.image_generation_model || '未配置'} ·
-						 总结：{provider.summary_model || provider.chat_model}
+						总结：{provider.summary_model || provider.chat_model}
 					</Typography.Text>
+					<Typography.Text type="secondary">已缓存 {provider.available_models?.length || 0} 个模型</Typography.Text>
 				</Space>
 			),
 		},
@@ -251,9 +334,7 @@ const AIProviderSettings = ({ robotCode }: IProps) => {
 				style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}
 				wrap
 			>
-				<Typography.Text type="secondary">
-					每个渠道可分别指定 AI 回复、识图、生图和群聊总结模型。
-				</Typography.Text>
+				<Typography.Text type="secondary">每个渠道可分别指定 AI 回复、识图、生图和群聊总结模型。</Typography.Text>
 				<Button
 					type="primary"
 					icon={<PlusOutlined />}
@@ -322,30 +403,55 @@ const AIProviderSettings = ({ robotCode }: IProps) => {
 							placeholder={editing ? '留空表示保持当前密钥' : '请输入 API Key'}
 						/>
 					</Form.Item>
+					<Button
+						block
+						icon={<ReloadOutlined />}
+						loading={modelsLoading}
+						onClick={() => void fetchModels()}
+						style={{ marginBottom: 16 }}
+					>
+						获取渠道模型
+					</Button>
 					<Form.Item
 						name="chat_model"
 						label="AI 回复模型"
 						rules={[{ required: true, message: '请输入 AI 回复模型' }]}
 					>
-						<Input placeholder="例如 gpt-5.6-luna" />
+						<AutoComplete
+							options={modelOptions}
+							showSearch={{ filterOption: () => true }}
+							placeholder="获取后选择，也可手动输入"
+						/>
 					</Form.Item>
 					<Form.Item
 						name="image_recognition_model"
 						label="识图模型"
 					>
-						<Input placeholder="留空时使用 AI 回复模型" />
+						<AutoComplete
+							options={modelOptions}
+							showSearch={{ filterOption: () => true }}
+							placeholder="留空时使用 AI 回复模型"
+						/>
 					</Form.Item>
 					<Form.Item
 						name="image_generation_model"
 						label="生图模型"
 					>
-						<Input placeholder="例如 gpt-image-2" />
+						<AutoComplete
+							options={modelOptions}
+							showSearch={{ filterOption: () => true }}
+							placeholder="获取后选择，也可手动输入"
+						/>
 					</Form.Item>
 					<Form.Item
 						name="summary_model"
 						label="群聊总结模型"
 					>
-						<Input placeholder="留空时使用 AI 回复模型" />
+						<AutoComplete
+							options={modelOptions}
+							showSearch={{ filterOption: () => true }}
+							placeholder="留空时使用 AI 回复模型"
+						/>
 					</Form.Item>
 					<Space.Compact block>
 						<Form.Item

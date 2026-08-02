@@ -3,7 +3,6 @@ set -eu
 
 client_name="${1:-}"
 image="${OPENCHAT_CLIENT_IMAGE:-openchat-wx:local}"
-ui_port="${OPENCHAT_CLIENT_UI_PORT:-9001}"
 
 if [ -z "$client_name" ]; then
   clients=$(docker ps --filter 'name=^/client_' --format '{{.Names}}')
@@ -33,14 +32,12 @@ docker rename "$client_name" "$backup_name"
 if docker run -d \
   --name "$client_name" \
   --restart always \
-  --network wechat-robot \
-  --env-file "$env_file" \
-  --volumes-from "$backup_name" \
-  -p "127.0.0.1:${ui_port}:9000" \
-  "$image" >/dev/null; then
-  echo "Started $client_name; rollback container: $backup_name"
-  echo "Provider UI: http://127.0.0.1:${ui_port}/api/v1/robot/ai-providers/ui"
-  exit 0
+	--network wechat-robot \
+	--env-file "$env_file" \
+	--volumes-from "$backup_name" \
+	"$image" >/dev/null; then
+	echo "Started $client_name; rollback container: $backup_name"
+	exit 0
 fi
 
 echo "New client failed to start; rolling back." >&2

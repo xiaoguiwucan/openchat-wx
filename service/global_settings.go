@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"strings"
 
 	"github.com/xiaoguiwucan/openchat-wx/model"
 	"github.com/xiaoguiwucan/openchat-wx/repository"
@@ -13,12 +14,13 @@ type GlobalSettingsService struct {
 	gsRepo *repository.GlobalSettings
 }
 
-func (s *GlobalSettingsService) SaveFreeReplySettings(enabled bool, level string, cooldownSeconds, dailyLimit int) error {
+func (s *GlobalSettingsService) SaveFreeReplySettings(enabled bool, level string, cooldownSeconds, dailyLimit int, chatAITrigger string) error {
 	if err := s.gsRepo.DB.WithContext(s.ctx).Model(&model.GlobalSettings{}).Where("id > 0").Updates(map[string]any{
 		"free_reply_enabled":          enabled,
 		"free_reply_level":            level,
 		"free_reply_cooldown_seconds": cooldownSeconds,
 		"free_reply_daily_limit":      dailyLimit,
+		"chat_ai_trigger":             strings.TrimSpace(chatAITrigger),
 	}).Error; err != nil {
 		return err
 	}

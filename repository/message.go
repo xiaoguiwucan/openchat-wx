@@ -61,6 +61,33 @@ func (m *Message) GetRecentEmoticons(fromWxID string, limit int) ([]*model.Messa
 	return messages, err
 }
 
+// GetRecentChatRoomMessagesBefore returns the recent room timeline before the
+// current message. Free-reply routing uses it to distinguish ambient questions
+// from a continuation between two group members and to detect repeated text.
+func (m *Message) GetRecentChatRoomMessagesBefore(message *model.Message, limit int, since int64) ([]*model.Message, error) {
+	if message == nil || message.ID <= 0 || message.FromWxID == "" {
+		return []*model.Message{}, nil
+	}
+	if limit <= 0 || limit > 50 {
+		limit = 12
+	}
+	var messages []*model.Message
+	query := m.DB.WithContext(m.Ctx).
+		Where("id < ?", message.ID).
+		Where("from_wxid = ?", message.FromWxID).
+		Where("`type` = ?", model.MsgTypeText)
+	if since > 0 {
+		query = query.Where("created_at >= ?", since)
+	}
+	if err := query.Order("id DESC").Limit(limit).Find(&messages).Error; err != nil {
+		return nil, err
+	}
+	for left, right := 0, len(messages)-1; left < right; left, right = left+1, right-1 {
+		messages[left], messages[right] = messages[right], messages[left]
+	}
+	return messages, nil
+}
+
 func (m *Message) GetByContactID(req dto.ChatHistoryRequest, pager appx.Pager) ([]*model.Message, int64, error) {
 	var messages []*model.Message
 	var total int64

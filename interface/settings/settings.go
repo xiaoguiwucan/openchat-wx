@@ -7,16 +7,18 @@ import (
 )
 
 type AIConfig struct {
-	BaseURL               string
-	APIKey                string
-	Model                 string
-	WorkflowModel         string
-	ImageRecognitionModel string
-	Prompt                string
-	MaxCompletionTokens   int
-	ImageAISettings       datatypes.JSON
-	TTSModel              string
-	TTSSettings           datatypes.JSON
+	BaseURL                 string
+	APIKey                  string
+	Model                   string
+	WorkflowModel           string
+	ImageRecognitionBaseURL string
+	ImageRecognitionAPIKey  string
+	ImageRecognitionModel   string
+	Prompt                  string
+	MaxCompletionTokens     int
+	ImageAISettings         datatypes.JSON
+	TTSModel                string
+	TTSSettings             datatypes.JSON
 }
 
 type PatConfig struct {

@@ -2,12 +2,12 @@ package startup
 
 import (
 	"context"
-	"log"
 	"github.com/xiaoguiwucan/openchat-wx/model"
 	"github.com/xiaoguiwucan/openchat-wx/pkg/qdrantx"
 	"github.com/xiaoguiwucan/openchat-wx/service"
 	"github.com/xiaoguiwucan/openchat-wx/utils"
 	"github.com/xiaoguiwucan/openchat-wx/vars"
+	"log"
 )
 
 // InitRAGService 初始化 RAG 相关服务
@@ -63,6 +63,8 @@ func reloadRAGServices(globalSettings *model.GlobalSettings) error {
 	}
 
 	textEmbeddingModel := ""
+	textEmbeddingBaseURL := ""
+	textEmbeddingAPIKey := ""
 	imageEmbeddingModel := ""
 	imageEmbeddingBaseURL := ""
 	imageEmbeddingAPIKey := ""
@@ -70,12 +72,26 @@ func reloadRAGServices(globalSettings *model.GlobalSettings) error {
 	textEmbeddingDimension := 2048
 	if globalSettings != nil {
 		textEmbeddingModel = utils.PtrStringValue(globalSettings.TextEmbeddingModel)
+		textEmbeddingBaseURL = globalSettings.ChatBaseURL
+		textEmbeddingAPIKey = globalSettings.ChatAPIKey
 		imageEmbeddingModel = utils.PtrStringValue(globalSettings.ImageEmbeddingModel)
 		imageEmbeddingBaseURL = utils.PtrStringValue(globalSettings.ImageEmbeddingBaseURL)
 		imageEmbeddingAPIKey = utils.PtrStringValue(globalSettings.ImageEmbeddingAPIKey)
 		imageEmbeddingDimension = utils.PtrIntValue(globalSettings.ImageEmbeddingDimension)
 		if v := utils.PtrIntValue(globalSettings.TextEmbeddingDimension); v > 0 {
 			textEmbeddingDimension = v
+		}
+		providerID := globalSettings.TextEmbeddingProviderID
+		if providerID == nil || *providerID <= 0 {
+			providerID = globalSettings.AIProviderID
+		}
+		provider, err := service.NewAIProviderService(ctx).GetEnabledByID(providerID)
+		if err != nil {
+			return err
+		}
+		if provider != nil {
+			textEmbeddingBaseURL = utils.NormalizeAIBaseURL(provider.BaseURL)
+			textEmbeddingAPIKey = provider.APIKey
 		}
 	}
 
@@ -87,8 +103,8 @@ func reloadRAGServices(globalSettings *model.GlobalSettings) error {
 		log.Println("Qdrant 图片向量集合已初始化")
 	}
 
-	if globalSettings == nil || globalSettings.ChatBaseURL == "" || globalSettings.ChatAPIKey == "" || textEmbeddingModel == "" {
-		log.Println("[RAG] AI 配置未设置（ChatBaseURL/ChatAPIKey/TextEmbeddingModel），RAG 服务跳过初始化")
+	if globalSettings == nil || textEmbeddingBaseURL == "" || textEmbeddingAPIKey == "" || textEmbeddingModel == "" {
+		log.Println("[RAG] 文本嵌入渠道或模型未配置，知识库向量检索和长期记忆已停用")
 		vars.KnowledgeService = nil
 		vars.ImageKnowledgeService = nil
 		vars.MemoryService = nil
@@ -96,7 +112,7 @@ func reloadRAGServices(globalSettings *model.GlobalSettings) error {
 	}
 
 	// 初始化文本 Embedding 服务（支持可配置模型）
-	embeddingSvc := service.NewEmbeddingService(globalSettings.ChatBaseURL, globalSettings.ChatAPIKey, textEmbeddingModel, textEmbeddingDimension)
+	embeddingSvc := service.NewEmbeddingService(textEmbeddingBaseURL, textEmbeddingAPIKey, textEmbeddingModel, textEmbeddingDimension)
 
 	// 初始化 VectorStore 服务
 	vectorStoreSvc := service.NewVectorStoreService(vars.QdrantClient, embeddingSvc)

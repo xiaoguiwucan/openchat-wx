@@ -2,7 +2,6 @@ package controller
 
 import (
 	"errors"
-	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -104,7 +103,17 @@ func (ct *AIProvider) Test(c *gin.Context) {
 	resp.ToResponse(result)
 }
 
-func (ct *AIProvider) UI(c *gin.Context) {
-	c.Header("Cache-Control", "no-store")
-	c.Data(http.StatusOK, "text/html; charset=utf-8", aiProviderHTML)
+func (ct *AIProvider) Models(c *gin.Context) {
+	var req service.AIProviderModelsInput
+	resp := appx.NewResponse(c)
+	if ok, err := appx.BindAndValid(c, &req); !ok || err != nil {
+		resp.ToErrorResponse(errors.New("参数错误"))
+		return
+	}
+	result, err := service.NewAIProviderService(c).FetchModels(req)
+	if err != nil {
+		resp.ToErrorResponse(err)
+		return
+	}
+	resp.ToResponse(result)
 }

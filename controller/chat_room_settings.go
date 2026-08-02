@@ -6,6 +6,7 @@ import (
 	"github.com/xiaoguiwucan/openchat-wx/model"
 	"github.com/xiaoguiwucan/openchat-wx/pkg/appx"
 	"github.com/xiaoguiwucan/openchat-wx/service"
+	"log"
 
 	"github.com/gin-gonic/gin"
 )
@@ -46,6 +47,10 @@ func (ct *ChatRoomSettings) SaveChatRoomSettings(c *gin.Context) {
 		resp.ToErrorResponse(errors.New("参数错误"))
 		return
 	}
+	log.Printf("[ChatRoomSettingsSave] room=%s config_id=%d chat_provider=%v chat_model=%q vision_provider=%v image_provider=%v summary_provider=%v",
+		req.ChatRoomID, req.ID, req.ChatAIProviderID, stringValue(req.ChatModel), req.ImageRecognitionProviderID,
+		req.ImageGenerationProviderID, req.SummaryAIProviderID,
+	)
 	if req.WelcomeEnabled != nil && *req.WelcomeEnabled {
 		if req.WelcomeType == "" {
 			resp.ToErrorResponse(errors.New("参数错误"))
@@ -97,4 +102,11 @@ func (ct *ChatRoomSettings) SaveChatRoomSettings(c *gin.Context) {
 		return
 	}
 	resp.ToResponse(nil)
+}
+
+func stringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }

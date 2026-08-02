@@ -641,8 +641,12 @@ func (s *ChatRoomService) ChatRoomAISummaryByChatRoomID(globalSettings *model.Gl
 	if setting.ChatRoomSummaryModel != nil && *setting.ChatRoomSummaryModel != "" {
 		summaryModel = *setting.ChatRoomSummaryModel
 	}
-	providerID := globalSettings.AIProviderID
-	if setting.AIProviderID != nil {
+	providerID := providerIDOrFallback(globalSettings.SummaryAIProviderID, globalSettings.AIProviderID)
+	if setting.SummaryAIProviderID != nil {
+		if *setting.SummaryAIProviderID > 0 {
+			providerID = setting.SummaryAIProviderID
+		}
+	} else if (globalSettings.SummaryAIProviderID == nil || *globalSettings.SummaryAIProviderID <= 0) && setting.AIProviderID != nil {
 		providerID = setting.AIProviderID
 	}
 	provider, err := NewAIProviderService(s.ctx).GetEnabledByID(providerID)
@@ -652,7 +656,9 @@ func (s *ChatRoomService) ChatRoomAISummaryByChatRoomID(globalSettings *model.Gl
 	if provider != nil {
 		aiApiKey = provider.APIKey
 		aiApiBaseURL = strings.TrimRight(utils.NormalizeAIBaseURL(provider.BaseURL), "/")
-		summaryModel = provider.SummaryModel
+		if summaryModel == "" {
+			summaryModel = provider.SummaryModel
+		}
 		if summaryModel == "" {
 			summaryModel = provider.ChatModel
 		}
@@ -727,7 +733,7 @@ func (s *ChatRoomService) ChatRoomAISummary() error {
 		return err
 	}
 
-	if globalSettings == nil || globalSettings.ChatAIEnabled == nil || !*globalSettings.ChatAIEnabled || globalSettings.ChatAPIKey == "" || globalSettings.ChatBaseURL == "" {
+	if globalSettings == nil || globalSettings.ChatAIEnabled == nil || !*globalSettings.ChatAIEnabled {
 		log.Printf("全局设置未开启AI，跳过群聊总结")
 		return nil
 	}

@@ -2,7 +2,6 @@ import { useRequest } from 'ahooks';
 import {
 	Alert,
 	App,
-	AutoComplete,
 	Avatar,
 	Button,
 	Col,
@@ -23,14 +22,17 @@ import { maxTagPlaceholder } from '@/common/maxTagPlaceholder';
 import ParamsGroup from '@/components/ParamsGroup';
 import SystemPromptEditor from '@/components/SystemPromptEditor';
 import { DefaultAvatar } from '@/constant';
-import { AiModels } from '@/constant/ai';
 import AIDrawingSettingsEditor from './AIDrawingSettingsEditor';
 import AIPodcastConfigEditor from './AIPodcastConfigEditor';
+import AIProviderModelFields from './AIProviderModelFields';
+import { openchatAPIBase, openchatRequest } from './openchat-api';
 import TTSettingsEditor from './TTSettingsEditor';
+import { useAIProviderModels } from './useAIProviderModels';
 import { imageRecognitionModelTips, ObjectToString, onTTSEnabledChange } from './utils';
 
 interface IProps {
 	robotId: number;
+	robotCode: string;
 	chatRoom: NonNullable<NonNullable<Api.Contact.ListList.ResponseBody['data']>['items']>[number];
 	open: boolean;
 	onClose: () => void;
@@ -44,6 +46,12 @@ const ChatRoomSettings = (props: IProps) => {
 	const { chatRoom } = props;
 
 	const [form] = Form.useForm<IFormValue>();
+	const configIdRef = React.useRef(0);
+	const { loading: providerLoading, providers } = useAIProviderModels({
+		robotCode: props.robotCode,
+		scope: 'chat_room',
+		targetId: chatRoom.wechat_id!,
+	});
 
 	const { data: chatRoomMembers = [], loading: loadingChatRoomMembers } = useRequest(
 		async () => {
@@ -99,22 +107,36 @@ const ChatRoomSettings = (props: IProps) => {
 	);
 
 	// 加载群聊设置
+	const chatRoomSettingsURL = `${openchatAPIBase(props.robotCode)}/chat-room-settings`;
 	const { data, loading } = useRequest(
 		async () => {
-			const resp = await window.wechatRobotClient.chatRoomSettings.chatRoomSettingsList({
-				id: props.robotId,
-				chat_room_id: chatRoom.wechat_id!,
-			});
-			return resp.data;
+			return openchatRequest<Api.DtoGetChatRoomSettingsResponse>(
+				`${chatRoomSettingsURL}?chat_room_id=${encodeURIComponent(chatRoom.wechat_id!)}`,
+			);
 		},
 		{
 			manual: false,
 			onSuccess: resp => {
-				if (!resp?.data) {
+				if (!resp) {
 					return;
 				}
-				ObjectToString(resp.data);
-				form.setFieldsValue(resp?.data || {});
+				const settings = { ...resp };
+				configIdRef.current = settings.id || 0;
+				settings.chat_ai_provider_id ??= 0;
+				settings.image_recognition_provider_id ??= 0;
+				settings.image_generation_provider_id ??= 0;
+				settings.summary_ai_provider_id ??= 0;
+				if (settings.image_ai_settings && typeof settings.image_ai_settings === 'object') {
+					const legacy = settings.image_ai_settings as Record<string, unknown>;
+					settings.image_generation_model ||= typeof legacy.model === 'string' ? legacy.model : undefined;
+					settings.image_ai_settings = Object.fromEntries(
+						['size', 'quality', 'response_format']
+							.map(key => [key, legacy[key]])
+							.filter(([, value]) => typeof value === 'string' && value),
+					);
+				}
+				ObjectToString(settings);
+				form.setFieldsValue(settings);
 			},
 			onError: reason => {
 				message.error(reason.message);
@@ -124,8 +146,10 @@ const ChatRoomSettings = (props: IProps) => {
 
 	const { runAsync: onSave, loading: saveLoading } = useRequest(
 		async (data: Api.ChatRoomSettings.ChatRoomSettingsCreate.RequestBody) => {
-			const resp = await window.wechatRobotClient.chatRoomSettings.chatRoomSettingsCreate({ id: props.robotId }, data);
-			return resp.data;
+			return openchatRequest<null>(chatRoomSettingsURL, {
+				method: 'POST',
+				body: JSON.stringify(data),
+			});
 		},
 		{
 			manual: true,
@@ -141,15 +165,28 @@ const ChatRoomSettings = (props: IProps) => {
 
 	const onOk = async () => {
 		const values = await form.validateFields();
+		for (const providerField of [
+			'chat_ai_provider_id',
+			'image_recognition_provider_id',
+			'image_generation_provider_id',
+			'summary_ai_provider_id',
+		] as const) {
+			values[providerField] = form.getFieldValue(providerField);
+		}
 
 		if (values.image_ai_enabled) {
 			try {
-				const json = JSON.parse(values.image_ai_settings as unknown as string);
+				const raw = values.image_ai_settings as unknown;
+				const json = typeof raw === 'string' && raw.trim() ? JSON.parse(raw) : raw || {};
 				if (!json || typeof json !== 'object' || Array.isArray(json)) {
 					message.error('绘图设置格式错误，不是有效的JSON对象格式');
 					return;
 				}
-				values.image_ai_settings = json;
+				values.image_ai_settings = Object.fromEntries(
+					['size', 'quality', 'response_format']
+						.map(key => [key, (json as Record<string, unknown>)[key]])
+						.filter(([, value]) => typeof value === 'string' && value),
+				);
 			} catch {
 				message.error('绘图设置格式错误，不是有效的JSON对象格式');
 				return;
@@ -186,12 +223,11 @@ const ChatRoomSettings = (props: IProps) => {
 		if (values.wxhb_notify_member_list) {
 			values.wxhb_notify_member_list = (values.wxhb_notify_member_list as unknown as string[]).join(',');
 		}
-		const configId = values.id;
-		await onSave({ ...values, chat_room_id: chatRoom.wechat_id!, config_id: configId, id: props.robotId });
+		await onSave({ ...values, chat_room_id: chatRoom.wechat_id!, id: configIdRef.current });
 	};
 
 	const applyGlobalSettings = (
-		type: 'chat' | 'drawing' | 'tts' | 'welcome' | 'pat' | 'leave_chat_room_alert' | 'all',
+		type: 'chat' | 'free_reply' | 'drawing' | 'tts' | 'welcome' | 'pat' | 'leave_chat_room_alert' | 'all',
 	) => {
 		if (!globalSettings?.data) {
 			message.error('全局配置不存在');
@@ -206,15 +242,24 @@ const ChatRoomSettings = (props: IProps) => {
 		const chatSettings: Partial<IFormValue> = {
 			chat_ai_enabled: globalSettings.data.chat_ai_enabled,
 			chat_ai_trigger: globalSettings.data.chat_ai_trigger,
-			chat_base_url: globalSettings.data.chat_base_url,
-			chat_api_key: globalSettings.data.chat_api_key,
+			chat_ai_provider_id: globalSettings.data.chat_ai_provider_id,
 			chat_model: globalSettings.data.chat_model,
+			image_recognition_provider_id: globalSettings.data.image_recognition_provider_id,
 			image_recognition_model: globalSettings.data.image_recognition_model,
 			max_completion_tokens: globalSettings.data.max_completion_tokens,
 			chat_prompt: globalSettings.data.chat_prompt,
 		};
+		const freeReplySettings: Partial<IFormValue> = {
+			free_reply_enabled: globalSettings.data.free_reply_enabled,
+			free_reply_level: globalSettings.data.free_reply_level,
+			free_reply_cooldown_seconds: globalSettings.data.free_reply_cooldown_seconds,
+			free_reply_daily_limit: globalSettings.data.free_reply_daily_limit,
+		};
+		const globalImageSettings = (globalSettings.data.image_ai_settings || {}) as Record<string, unknown>;
 		const drawingSettings: Partial<IFormValue> = {
 			image_ai_enabled: globalSettings.data.image_ai_enabled,
+			image_generation_provider_id: globalSettings.data.image_generation_provider_id,
+			image_generation_model: typeof globalImageSettings.model === 'string' ? globalImageSettings.model : undefined,
 			image_ai_settings: imageAiSettings as unknown as object,
 		};
 		const welcomeSettings: Partial<IFormValue> = {
@@ -244,6 +289,7 @@ const ChatRoomSettings = (props: IProps) => {
 		const otherSettings: Partial<IFormValue> = {
 			chat_room_ranking_enabled: globalSettings.data.chat_room_ranking_enabled,
 			chat_room_summary_enabled: globalSettings.data.chat_room_summary_enabled,
+			summary_ai_provider_id: globalSettings.data.summary_ai_provider_id,
 			chat_room_summary_model: globalSettings.data.chat_room_summary_model,
 			chat_room_summary_mode: globalSettings.data.chat_room_summary_mode,
 			news_enabled: globalSettings.data.news_enabled,
@@ -253,6 +299,9 @@ const ChatRoomSettings = (props: IProps) => {
 		switch (type) {
 			case 'chat':
 				form.setFieldsValue(chatSettings);
+				break;
+			case 'free_reply':
+				form.setFieldsValue(freeReplySettings);
 				break;
 			case 'drawing':
 				form.setFieldsValue(drawingSettings);
@@ -272,6 +321,7 @@ const ChatRoomSettings = (props: IProps) => {
 			case 'all':
 				form.setFieldsValue({
 					...chatSettings,
+					...freeReplySettings,
 					...drawingSettings,
 					...ttsSettings,
 					...welcomeSettings,
@@ -345,7 +395,7 @@ const ChatRoomSettings = (props: IProps) => {
 						style={{ padding: '0 3px' }}
 					>
 						{chatRoom.remark || chatRoom.alias || chatRoom.nickname || chatRoom.wechat_id} 聊天设置
-						{data?.data?.id === 0 && (
+						{data?.id === 0 && (
 							<span style={{ fontSize: 12, color: '#ff5722' }}>(当前群聊未进行过任何设置，运行时会继承全局设置)</span>
 						)}
 					</Col>
@@ -400,7 +450,7 @@ const ChatRoomSettings = (props: IProps) => {
 				</Row>
 			}
 		>
-			<Spin spinning={loading || globalLoading}>
+			<Spin spinning={loading || globalLoading || providerLoading}>
 				<Form
 					layout="vertical"
 					form={form}
@@ -439,78 +489,44 @@ const ChatRoomSettings = (props: IProps) => {
 										<>
 											<Form.Item
 												name="chat_ai_trigger"
-												label="AI触发词"
-												tooltip="唤醒AI的关键词，以关键词开头的消息会被AI处理，而不用手动@AI"
+												label="强制唤醒词（可选）"
+												tooltip="消息以该词开头时一定触发 AI；自由回复开启后，无需该词也可由机器人主动参与"
 											>
 												<Input
-													placeholder="请输入AI触发词，如果留空，则需要手动@AI"
+													placeholder="留空则继承全局强制唤醒词"
 													allowClear
 												/>
 											</Form.Item>
-											<Form.Item
-												name="chat_base_url"
-												label="API地址"
-												tooltip={
-													<>
-														示例:{' '}
-														<a
-															href="https://new-api.houhoukang.com/"
-															target="_blank"
-															rel="noreferrer"
-														>
-															https://new-api.houhoukang.com/
-														</a>
-													</>
-												}
-											>
-												<Input
-													placeholder="不填则使用全局配置"
-													allowClear
-												/>
-											</Form.Item>
-											<Form.Item
-												name="chat_api_key"
-												label="API密钥"
-												tooltip={
-													<>
-														可前往
-														<a
-															href="https://new-api.houhoukang.com/"
-															target="_blank"
-															rel="noreferrer"
-														>
-															https://new-api.houhoukang.com/
-														</a>
-														获取
-													</>
-												}
-											>
-												<Input
-													placeholder="不填则使用全局配置"
-													allowClear
-												/>
-											</Form.Item>
-											<Form.Item
-												name="chat_model"
-												label="聊天模型"
-											>
-												<AutoComplete
-													placeholder="不填则使用全局配置"
-													style={{ width: '100%' }}
-													options={AiModels}
-												/>
-											</Form.Item>
-											<Form.Item
-												name="image_recognition_model"
-												label="图像识别模型"
-												tooltip={imageRecognitionModelTips}
-											>
-												<AutoComplete
-													placeholder="不填则使用全局配置"
-													style={{ width: '100%' }}
-													options={AiModels}
-												/>
-											</Form.Item>
+											<Alert
+												showIcon
+												type="info"
+												title="群聊可覆盖全局模型"
+												description="连接地址和密钥由所选模型渠道自动提供；渠道留空时继承全局设置。"
+												style={{ marginBottom: 16 }}
+											/>
+											<AIProviderModelFields
+												form={form}
+												providers={providers}
+												providerName="chat_ai_provider_id"
+												modelName="chat_model"
+												providerLabel="AI回复渠道"
+												modelLabel="聊天模型"
+												defaultModelKey="chat_model"
+												required={false}
+												allowInherit
+											/>
+											<AIProviderModelFields
+												form={form}
+												providers={providers}
+												providerName="image_recognition_provider_id"
+												modelName="image_recognition_model"
+												providerLabel="图像识别渠道"
+												modelLabel="图像识别模型"
+												defaultModelKey="image_recognition_model"
+												modelTooltip={imageRecognitionModelTips}
+												required={false}
+												allowInherit
+											/>
 											<Form.Item
 												name="knowledge_categories"
 												label="绑定知识库"
@@ -573,6 +589,105 @@ const ChatRoomSettings = (props: IProps) => {
 						</Form.Item>
 					</ParamsGroup>
 					<ParamsGroup
+						title="自由回复设置"
+						style={{ marginTop: 24 }}
+					>
+						<Form.Item
+							layout="horizontal"
+							name="free_reply_enabled"
+							label="自由参与群聊"
+							valuePropName="checked"
+						>
+							<Switch
+								unCheckedChildren="关闭"
+								checkedChildren="开启"
+								onChange={(checked: boolean) => {
+									if (checked && !form.getFieldValue('free_reply_level')) {
+										form.setFieldsValue({
+											free_reply_level: globalSettings?.data?.free_reply_level || 'normal',
+											free_reply_cooldown_seconds: globalSettings?.data?.free_reply_cooldown_seconds ?? 60,
+											free_reply_daily_limit: globalSettings?.data?.free_reply_daily_limit ?? 30,
+										});
+									}
+								}}
+							/>
+						</Form.Item>
+						<Form.Item
+							noStyle
+							shouldUpdate={(prev: IFormValue, next: IFormValue) => prev.free_reply_enabled !== next.free_reply_enabled}
+						>
+							{({ getFieldValue }) =>
+								getFieldValue('free_reply_enabled') ? (
+									<>
+										<Form.Item
+											name="free_reply_level"
+											label="参与频率"
+											rules={[{ required: true, message: '请选择自由回复参与频率' }]}
+											help="按 LightAgent 评分档位控制参与频率；高频最容易接话，安静只回应高分内容。"
+										>
+											<Select
+												options={[
+													{ label: '高频', value: 'crazy' },
+													{ label: '活跃', value: 'active' },
+													{ label: '普通', value: 'normal' },
+													{ label: '安静', value: 'cautious' },
+												]}
+											/>
+										</Form.Item>
+										<Row gutter={12}>
+											<Col
+												xs={24}
+												sm={12}
+											>
+												<Form.Item
+													name="free_reply_cooldown_seconds"
+													label="回复冷却（秒）"
+													tooltip="同一群两次自由回复之间的最短间隔，0 表示不限制"
+													rules={[{ required: true, message: '请输入回复冷却时间' }]}
+												>
+													<InputNumber
+														min={0}
+														max={86400}
+														precision={0}
+														style={{ width: '100%' }}
+													/>
+												</Form.Item>
+											</Col>
+											<Col
+												xs={24}
+												sm={12}
+											>
+												<Form.Item
+													name="free_reply_daily_limit"
+													label="每日上限（次）"
+													tooltip="这个群每天最多触发的自由回复次数，0 表示不限制"
+													rules={[{ required: true, message: '请输入每日回复上限' }]}
+												>
+													<InputNumber
+														min={0}
+														max={10000}
+														precision={0}
+														style={{ width: '100%' }}
+													/>
+												</Form.Item>
+											</Col>
+										</Row>
+									</>
+								) : null
+							}
+						</Form.Item>
+						<Form.Item style={{ marginBottom: 6 }}>
+							<div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+								<Button
+									disabled={globalLoading}
+									onClick={() => applyGlobalSettings('free_reply')}
+								>
+									使用全局自由回复设置
+								</Button>
+							</div>
+						</Form.Item>
+					</ParamsGroup>
+					<ParamsGroup
 						title="AI绘图设置"
 						style={{ marginTop: 24 }}
 					>
@@ -595,11 +710,22 @@ const ChatRoomSettings = (props: IProps) => {
 								if (getFieldValue('image_ai_enabled')) {
 									return (
 										<>
+											<AIProviderModelFields
+												form={form}
+												providers={providers}
+												providerName="image_generation_provider_id"
+												modelName="image_generation_model"
+												providerLabel="AI绘图渠道"
+												modelLabel="生图模型"
+												defaultModelKey="image_generation_model"
+												required={false}
+												allowInherit
+											/>
 											<Form.Item
 												name="image_ai_settings"
-												label="绘图设置"
+												label="绘图参数"
 											>
-												<AIDrawingSettingsEditor />
+												<AIDrawingSettingsEditor channelManaged />
 											</Form.Item>
 										</>
 									);
@@ -1133,16 +1259,17 @@ const ChatRoomSettings = (props: IProps) => {
 								if (getFieldValue('chat_room_summary_enabled')) {
 									return (
 										<>
-											<Form.Item
-												name="chat_room_summary_model"
-												label="AI模型"
-											>
-												<AutoComplete
-													placeholder="不填则使用全局配置"
-													style={{ width: '100%' }}
-													options={AiModels}
-												/>
-											</Form.Item>
+											<AIProviderModelFields
+												form={form}
+												providers={providers}
+												providerName="summary_ai_provider_id"
+												modelName="chat_room_summary_model"
+												providerLabel="群聊总结渠道"
+												modelLabel="群聊总结模型"
+												defaultModelKey="summary_model"
+												required={false}
+												allowInherit
+											/>
 											<Form.Item
 												name="chat_room_summary_mode"
 												label="显示模式"

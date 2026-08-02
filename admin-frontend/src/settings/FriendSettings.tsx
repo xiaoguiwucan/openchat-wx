@@ -22,13 +22,14 @@ import { DtoContactType } from '@/api/wechat-robot/wechat-robot';
 import ParamsGroup from '@/components/ParamsGroup';
 import SystemPromptEditor from '@/components/SystemPromptEditor';
 import { DefaultAvatar } from '@/constant';
-import { AiModels } from '@/constant/ai';
 import AIDrawingSettingsEditor from './AIDrawingSettingsEditor';
 import TTSettingsEditor from './TTSettingsEditor';
+import { useAIProviderModels } from './useAIProviderModels';
 import { imageRecognitionModelTips, ObjectToString, onTTSEnabledChange } from './utils';
 
 interface IProps {
 	robotId: number;
+	robotCode: string;
 	contact: NonNullable<NonNullable<Api.Contact.ListList.ResponseBody['data']>['items']>[number];
 	open: boolean;
 	onClose: () => void;
@@ -42,6 +43,11 @@ const FriendSettings = (props: IProps) => {
 	const { contact } = props;
 
 	const [form] = Form.useForm<IFormValue>();
+	const { modelOptions: providerModelOptions } = useAIProviderModels({
+		robotCode: props.robotCode,
+		scope: 'friend',
+		targetId: contact.wechat_id!,
+	});
 
 	// 加载全局配置
 	const { data: globalSettings, loading: globalLoading } = useRequest(
@@ -353,7 +359,8 @@ const FriendSettings = (props: IProps) => {
 												<AutoComplete
 													placeholder="不填则使用全局配置"
 													style={{ width: '100%' }}
-													options={AiModels}
+													options={providerModelOptions}
+													showSearch={{ filterOption: () => true }}
 												/>
 											</Form.Item>
 											<Form.Item
@@ -364,7 +371,8 @@ const FriendSettings = (props: IProps) => {
 												<AutoComplete
 													placeholder="不填则使用全局配置"
 													style={{ width: '100%' }}
-													options={AiModels}
+													options={providerModelOptions}
+													showSearch={{ filterOption: () => true }}
 												/>
 											</Form.Item>
 											<Form.Item
@@ -439,7 +447,7 @@ const FriendSettings = (props: IProps) => {
 												name="image_ai_settings"
 												label="绘图设置"
 											>
-												<AIDrawingSettingsEditor />
+												<AIDrawingSettingsEditor modelOptions={providerModelOptions} />
 											</Form.Item>
 										</>
 									);

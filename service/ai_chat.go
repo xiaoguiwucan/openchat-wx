@@ -24,6 +24,8 @@ type AIChatService struct {
 
 var imageURLInContextRegexp = regexp.MustCompile(`图片地址:\s*(https?://\S+)`)
 
+var chatToolRequestPattern = regexp.MustCompile(`(?i)(搜索|搜一下|查一下|查找|查询|联网|网页|链接|总结|归纳|群聊记录|聊天记录|记忆|回忆|刚才说|之前说|谁说|知识库|文档|文件|pdf|word|excel|ppt|提醒|定时|天气|新闻|热搜|小红书|抖音|视频|图片地址|识图|识别图片|截图|发送给|发给)`)
+
 func NewAIChatService(ctx context.Context, config settings.Settings) *AIChatService {
 	return &AIChatService{
 		ctx:    ctx,
@@ -82,10 +84,24 @@ func (s *AIChatService) Chat(robotCtx robotctx.RobotContext, aiMessages []openai
 	}
 
 	aiStart := time.Now()
-	reply, err := vars.Agent.ChatWithTools(&robotCtx, &client, req)
-	log.Printf("[AI] 接口调用耗时: %v", time.Since(aiStart))
+	useTools := chatRequestNeedsTools(s.latestChatMessageText(aiMessages))
+	var reply openai.ChatCompletionMessage
+	var err error
+	if useTools {
+		reply, err = vars.Agent.ChatWithTools(&robotCtx, &client, req)
+	} else {
+		reply, err = streamChatCompletionMessage(s.ctx, &client, req)
+		if err != nil {
+			err = fmt.Errorf("failed to call ai: %w", err)
+		}
+	}
+	log.Printf("[AI] 接口调用耗时: %v mode=%s", time.Since(aiStart), map[bool]string{true: "tools", false: "fast"}[useTools])
 
 	return reply, err
+}
+
+func chatRequestNeedsTools(content string) bool {
+	return chatToolRequestPattern.MatchString(strings.TrimSpace(content))
 }
 
 func (s *AIChatService) describeLatestImage(aiConfig settings.AIConfig, messages []openai.ChatCompletionMessageParamUnion) string {
@@ -98,8 +114,8 @@ func (s *AIChatService) describeLatestImage(aiConfig settings.AIConfig, messages
 			continue
 		}
 		description, err := aicompat.NewClient().DescribeImage(s.ctx, aicompat.Config{
-			BaseURL: aiConfig.BaseURL,
-			APIKey:  aiConfig.APIKey,
+			BaseURL: firstNonEmpty(aiConfig.ImageRecognitionBaseURL, aiConfig.BaseURL),
+			APIKey:  firstNonEmpty(aiConfig.ImageRecognitionAPIKey, aiConfig.APIKey),
 			Model:   aiConfig.ImageRecognitionModel,
 		}, strings.TrimRight(matches[1], "，,。.!！?？"), "")
 		if err != nil {
@@ -107,6 +123,15 @@ func (s *AIChatService) describeLatestImage(aiConfig settings.AIConfig, messages
 			return ""
 		}
 		return description
+	}
+	return ""
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
 	}
 	return ""
 }

@@ -1,12 +1,12 @@
 import { useRequest } from 'ahooks';
-import { Alert, App, AutoComplete, Button, Form, Input, InputNumber, Select, Spin, Switch, TimePicker } from 'antd';
+import { Alert, App, Button, Form, Input, InputNumber, Select, Spin, Switch, TimePicker } from 'antd';
 import dayjs from 'dayjs';
-import React from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import type * as Api from '@/api/wechat-robot/wechat-robot';
 import type { AnyType } from '@/common/types';
 import ParamsGroup from '@/components/ParamsGroup';
 import SystemPromptEditor from '@/components/SystemPromptEditor';
-import { AiModels, TextEmbeddingDimensions, TextEmbeddingModels } from '@/constant/ai';
+import { TextEmbeddingDimensions } from '@/constant/ai';
 import {
 	fromCronExpression,
 	generateMondayCronExpression,
@@ -16,10 +16,12 @@ import {
 	toCronExpression,
 } from '@/utils';
 import AIDrawingSettingsEditor from './AIDrawingSettingsEditor';
+import AIProviderModelFields from './AIProviderModelFields';
 import AIProviderSettings from './AIProviderSettings';
+import type { AIProvider } from './AIProviderSettings';
 import FreeReplySettings from './FreeReplySettings';
 import TTSettingsEditor from './TTSettingsEditor';
-import { chatBaseURLTips, imageRecognitionModelTips, ObjectToString, onTTSEnabledChange } from './utils';
+import { imageRecognitionModelTips, ObjectToString, onTTSEnabledChange } from './utils';
 
 interface IProps {
 	robotId: number;
@@ -32,6 +34,22 @@ const GlobalSettings = (props: IProps) => {
 	const { message } = App.useApp();
 
 	const [form] = Form.useForm<IFormValue>();
+	const [providers, setProviders] = useState<AIProvider[]>([]);
+	const imageGenerationProviderID = Form.useWatch('image_generation_provider_id', form) as number | undefined;
+	const imageGenerationProvider = providers.find(provider => provider.id === imageGenerationProviderID);
+	const imageGenerationModelOptions = useMemo(
+		() =>
+			Array.from(
+				new Set(
+					[
+						...(imageGenerationProvider?.available_models || []),
+						imageGenerationProvider?.image_generation_model,
+					].filter(Boolean) as string[],
+				),
+			).map(model => ({ value: model })),
+		[imageGenerationProvider],
+	);
+	const handleProvidersChange = useCallback((nextProviders: AIProvider[]) => setProviders(nextProviders), []);
 
 	const validateCron = (cron: dayjs.Dayjs) => {
 		return toCronExpression(cron.hour(), cron.minute());
@@ -72,6 +90,18 @@ const GlobalSettings = (props: IProps) => {
 					return;
 				}
 				ObjectToString(resp.data);
+				const providerData = resp.data as AnyType;
+				for (const field of [
+					'chat_ai_provider_id',
+					'image_recognition_provider_id',
+					'image_generation_provider_id',
+					'summary_ai_provider_id',
+					'text_embedding_provider_id',
+				]) {
+					if (!providerData[field] && providerData.ai_provider_id) {
+						providerData[field] = providerData.ai_provider_id;
+					}
+				}
 				if (resp.data.friend_sync_cron) {
 					resp.data.friend_sync_cron = '1';
 				}
@@ -122,8 +152,16 @@ const GlobalSettings = (props: IProps) => {
 
 	const onOk = async () => {
 		const values = await form.validateFields();
+		if (values.chat_ai_enabled && !(values as AnyType).chat_ai_provider_id) {
+			message.error('请先为 AI 回复选择模型渠道');
+			return;
+		}
 
 		if (values.image_ai_enabled) {
+			if (!(values as AnyType).image_generation_provider_id) {
+				message.error('请先为 AI 绘图选择模型渠道');
+				return;
+			}
 			try {
 				const json = JSON.parse(values.image_ai_settings as unknown as string);
 				if (!json || typeof json !== 'object' || Array.isArray(json)) {
@@ -176,7 +214,11 @@ const GlobalSettings = (props: IProps) => {
 		<div>
 			<Spin spinning={loading}>
 				<div style={{ maxHeight: 'calc(100vh - 180px)', overflow: 'auto', paddingInline: 2 }}>
-					<AIProviderSettings robotCode={props.robotCode} />
+					<AIProviderSettings
+						robotCode={props.robotCode}
+						onProvidersChange={handleProvidersChange}
+						onProviderMutation={refresh}
+					/>
 					<FreeReplySettings robotCode={props.robotCode} />
 					<Form
 						layout="vertical"
@@ -224,67 +266,28 @@ const GlobalSettings = (props: IProps) => {
 									if (getFieldValue('chat_ai_enabled')) {
 										return (
 											<>
-												<Form.Item
-													name="chat_ai_trigger"
-													label="AI触发词"
-													tooltip="唤醒AI的关键词，以关键词开头的消息会被AI处理，而不用手动@AI"
-												>
-													<Input
-														placeholder="请输入AI触发词，如果留空，则需要手动@AI"
-														allowClear
-													/>
-												</Form.Item>
-												<Form.Item
-													name="chat_base_url"
-													label="API地址"
-													rules={[{ required: true, message: 'API地址不能为空' }]}
-													tooltip={chatBaseURLTips}
-												>
-													<Input
-														placeholder="请输入API地址"
-														allowClear
-													/>
-												</Form.Item>
-												<Form.Item
-													name="chat_api_key"
-													label="API密钥"
-													rules={[{ required: true, message: 'API密钥不能为空' }]}
-													tooltip={
-														<>
-															可前往
-															<a
-																href="https://new-api.houhoukang.com/"
-																target="_blank"
-																rel="noreferrer"
-															>
-																https://new-api.houhoukang.com/
-															</a>
-															获取
-														</>
-													}
-												>
-													<Input
-														placeholder="请输入API密钥"
-														allowClear
-													/>
-												</Form.Item>
-												<Form.Item
-													name="chat_model"
-													label="聊天模型"
-													rules={[{ required: true, message: '聊天模型不能为空' }]}
-													help={
+												<Alert
+													showIcon
+													type="info"
+													title="各项能力可独立选择模型渠道"
+													description="连接地址和密钥由所选渠道自动提供，模型下拉列表来自该渠道缓存。"
+													style={{ marginBottom: 16 }}
+												/>
+												<AIProviderModelFields
+													form={form}
+													providers={providers}
+													providerName="chat_ai_provider_id"
+													modelName="chat_model"
+													providerLabel="AI回复渠道"
+													modelLabel="聊天模型"
+													defaultModelKey="chat_model"
+													modelHelp={
 														<>
 															<span style={{ color: '#e45c5c' }}>特别注意</span>:
 															提取记忆依赖全局聊天模型，这个模型必须支持JSON Schema
 														</>
 													}
-												>
-													<AutoComplete
-														placeholder="请选择或者手动输入聊天模型"
-														style={{ width: '100%' }}
-														options={AiModels}
-													/>
-												</Form.Item>
+												/>
 												<Form.Item
 													layout="horizontal"
 													name="memory_enabled"
@@ -296,21 +299,29 @@ const GlobalSettings = (props: IProps) => {
 														checkedChildren="开启"
 													/>
 												</Form.Item>
-												<Form.Item
-													name="text_embedding_model"
-													label="文本嵌入模型"
-													rules={[{ required: true, message: '文本嵌入模型不能为空' }]}
-												>
-													<AutoComplete
-														placeholder="请选择或者手动输入文本嵌入模型"
-														style={{ width: '100%' }}
-														options={TextEmbeddingModels}
-													/>
-												</Form.Item>
+												<AIProviderModelFields
+													form={form}
+													providers={providers}
+													providerName="text_embedding_provider_id"
+													modelName="text_embedding_model"
+													providerLabel="文本嵌入渠道"
+													modelLabel="文本嵌入模型"
+													modelKind="embedding"
+													required={false}
+													modelHelp="可选。渠道必须支持 OpenAI /embeddings 接口；留空时知识库向量检索和长期记忆不可用，不影响聊天、识图、生图和群聊总结。"
+												/>
 												<Form.Item
 													name="text_embedding_dimension"
 													label="文本嵌入维度"
-													rules={[{ required: true, message: '文本嵌入维度不能为空' }]}
+													dependencies={['text_embedding_model']}
+													rules={[
+														({ getFieldValue }) => ({
+															validator: (_, value) =>
+																getFieldValue('text_embedding_model') && !value
+																	? Promise.reject(new Error('配置文本嵌入模型时必须选择维度'))
+																	: Promise.resolve(),
+														}),
+													]}
 													help={
 														<>
 															<span style={{ color: '#e45c5c' }}>特别注意</span>:
@@ -324,18 +335,16 @@ const GlobalSettings = (props: IProps) => {
 														options={TextEmbeddingDimensions}
 													/>
 												</Form.Item>
-												<Form.Item
-													name="image_recognition_model"
-													label="图像识别模型"
-													rules={[{ required: true, message: '图像识别模型不能为空' }]}
-													tooltip={imageRecognitionModelTips}
-												>
-													<AutoComplete
-														placeholder="请选择或者手动输入图像识别模型"
-														style={{ width: '100%' }}
-														options={AiModels}
-													/>
-												</Form.Item>
+												<AIProviderModelFields
+													form={form}
+													providers={providers}
+													providerName="image_recognition_provider_id"
+													modelName="image_recognition_model"
+													providerLabel="图像识别渠道"
+													modelLabel="图像识别模型"
+													defaultModelKey="image_recognition_model"
+													modelTooltip={imageRecognitionModelTips}
+												/>
 												<Form.Item
 													name="max_completion_tokens"
 													label="最大回复"
@@ -398,11 +407,45 @@ const GlobalSettings = (props: IProps) => {
 										return (
 											<>
 												<Form.Item
+													name="image_generation_provider_id"
+													label="AI绘图渠道"
+													rules={[{ required: true, message: 'AI绘图渠道不能为空' }]}
+												>
+													<Select
+														showSearch={{ optionFilterProp: 'label' }}
+														placeholder="请选择AI绘图渠道"
+														options={providers
+															.filter(provider => provider.enabled)
+															.map(provider => ({ label: provider.name, value: provider.id }))}
+														onChange={(providerID: number) => {
+															const provider = providers.find(item => item.id === providerID);
+															if (!provider) return;
+															const current = form.getFieldValue('image_ai_settings');
+															try {
+																const settings = typeof current === 'string' ? JSON.parse(current) : current || {};
+																form.setFieldValue(
+																	'image_ai_settings',
+																	JSON.stringify(
+																		{
+																			...settings,
+																			model: provider.image_generation_model || provider.available_models?.[0] || '',
+																		},
+																		null,
+																		2,
+																	),
+																);
+															} catch {
+																// Keep invalid JSON visible so the existing save validation can report it.
+															}
+														}}
+													/>
+												</Form.Item>
+												<Form.Item
 													name="image_ai_settings"
 													label="绘图设置"
 													rules={[{ required: true, message: '绘图设置不能为空' }]}
 												>
-													<AIDrawingSettingsEditor />
+													<AIDrawingSettingsEditor modelOptions={imageGenerationModelOptions} />
 												</Form.Item>
 											</>
 										);
@@ -897,17 +940,15 @@ const GlobalSettings = (props: IProps) => {
 									if (getFieldValue('chat_room_summary_enabled')) {
 										return (
 											<>
-												<Form.Item
-													name="chat_room_summary_model"
-													label="AI模型"
-													rules={[{ required: true, message: 'AI模型不能为空' }]}
-												>
-													<AutoComplete
-														placeholder="请选择或者手动输入AI模型"
-														style={{ width: '100%' }}
-														options={AiModels}
-													/>
-												</Form.Item>
+												<AIProviderModelFields
+													form={form}
+													providers={providers}
+													providerName="summary_ai_provider_id"
+													modelName="chat_room_summary_model"
+													providerLabel="群聊总结渠道"
+													modelLabel="总结模型"
+													defaultModelKey="summary_model"
+												/>
 												<Form.Item
 													name="chat_room_summary_mode"
 													label="显示模式"
