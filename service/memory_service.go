@@ -11,13 +11,13 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/openai/openai-go/v3"
 	"github.com/xiaoguiwucan/openchat-wx/interface/ai"
 	"github.com/xiaoguiwucan/openchat-wx/model"
 	"github.com/xiaoguiwucan/openchat-wx/repository"
 	"github.com/xiaoguiwucan/openchat-wx/utils"
 	"github.com/xiaoguiwucan/openchat-wx/vars"
-
-	"github.com/openai/openai-go/v3"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
@@ -37,6 +37,7 @@ type MemoryService struct {
 	crmRepo     *repository.ChatRoomMember
 	gsRepo      *repository.GlobalSettings
 	crsRepo     *repository.ChatRoomSettings
+	fsRepo      *repository.FriendSettings
 	mu          sync.Mutex
 }
 
@@ -96,6 +97,7 @@ func NewMemoryService(db *gorm.DB, vectorStore *VectorStoreService) *MemoryServi
 		crmRepo:     repository.NewChatRoomMemberRepo(ctx, db),
 		gsRepo:      repository.NewGlobalSettingsRepo(ctx, db),
 		crsRepo:     repository.NewChatRoomSettingsRepo(ctx, db),
+		fsRepo:      repository.NewFriendSettingsRepo(ctx, db),
 	}
 }
 
@@ -129,7 +131,7 @@ func (s *MemoryService) enabled() bool {
 	if settings.MemoryEnabled != nil && !*settings.MemoryEnabled {
 		return false
 	}
-	return settings.ChatBaseURL != "" && settings.ChatAPIKey != "" && settings.ChatModel != "" && s.vectorStore != nil
+	return s.vectorStore != nil
 }
 
 func (s *MemoryService) shouldDiscardMemoryMessage(state *model.MemoryExtractionState, messageID int64) bool {
@@ -304,7 +306,14 @@ func (s *MemoryService) extractAndStore(ctx context.Context, messages []*model.M
 	if err != nil {
 		return err
 	}
-	if settings == nil || settings.ChatBaseURL == "" || settings.ChatAPIKey == "" || settings.ChatModel == "" {
+	if settings == nil {
+		return nil
+	}
+	settings, err = s.resolveAISettings(ctx, settings, isChatRoom, chatRoomID, contactWxID)
+	if err != nil {
+		return err
+	}
+	if settings.ChatBaseURL == "" || settings.ChatAPIKey == "" || settings.ChatModel == "" {
 		return nil
 	}
 
@@ -334,6 +343,39 @@ func (s *MemoryService) extractAndStore(ctx context.Context, messages []*model.M
 		}
 	}
 	return nil
+}
+
+func (s *MemoryService) resolveAISettings(ctx context.Context, global *model.GlobalSettings, isChatRoom bool, chatRoomID, contactWxID string) (*model.GlobalSettings, error) {
+	resolved := *global
+	providerID := global.AIProviderID
+	if isChatRoom {
+		room, err := s.crsRepo.GetChatRoomSettings(chatRoomID)
+		if err != nil {
+			return nil, err
+		}
+		if room != nil && room.AIProviderID != nil {
+			providerID = room.AIProviderID
+		}
+	} else {
+		friend, err := s.fsRepo.GetFriendSettings(contactWxID)
+		if err != nil {
+			return nil, err
+		}
+		if friend != nil && friend.AIProviderID != nil {
+			providerID = friend.AIProviderID
+		}
+	}
+
+	provider, err := NewAIProviderService(ctx).GetEnabledByID(providerID)
+	if err != nil {
+		return nil, err
+	}
+	if provider != nil {
+		resolved.ChatBaseURL = utils.NormalizeAIBaseURL(provider.BaseURL)
+		resolved.ChatAPIKey = provider.APIKey
+		resolved.ChatModel = provider.ChatModel
+	}
+	return &resolved, nil
 }
 
 func (s *MemoryService) buildExtractionTranscript(messages []*model.Message, chatRoomID string) string {
@@ -452,7 +494,7 @@ func (s *MemoryService) extractMemoriesWithAI(ctx context.Context, settings *mod
 
 	userPrompt := "聊天窗口如下：\n" + transcript
 	client := newOpenAIClient(settings.ChatAPIKey, settings.ChatBaseURL)
-	msg, err := streamChatCompletionMessage(ctx, &client, openai.ChatCompletionNewParams{
+	req := openai.ChatCompletionNewParams{
 		Model: settings.ChatModel,
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.SystemMessage(systemPrompt),
@@ -468,7 +510,13 @@ func (s *MemoryService) extractMemoriesWithAI(ctx context.Context, settings *mod
 				},
 			},
 		},
-	})
+	}
+	msg, err := streamChatCompletionMessage(ctx, &client, req)
+	if err != nil {
+		log.Printf("[Memory] 结构化输出不兼容，降级为普通 JSON 请求: %v", err)
+		req.ResponseFormat = openai.ChatCompletionNewParamsResponseFormatUnion{}
+		msg, err = streamChatCompletionMessage(ctx, &client, req)
+	}
 	if err != nil {
 		return nil, err
 	}

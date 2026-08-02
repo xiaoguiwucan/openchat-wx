@@ -3,9 +3,9 @@ package startup
 import (
 	"fmt"
 	"log"
+
 	"github.com/xiaoguiwucan/openchat-wx/model"
 	"github.com/xiaoguiwucan/openchat-wx/vars"
-
 	"gorm.io/gorm"
 )
 
@@ -23,6 +23,7 @@ func autoMigrateTasks() []migrateTask {
 				return vars.DB
 			},
 			models: []any{
+				&model.AIProvider{},
 				&model.SystemSettings{},
 				&model.GlobalSettings{},
 				&model.ChatRoomSettings{},

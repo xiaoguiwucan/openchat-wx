@@ -42,6 +42,26 @@ services:
       retries: 5
       start_period: 5s
 
+  # The protocol image may keep its HTTP process alive after the inbound long
+  # link reaches EOF. Detect that half-alive state and restart only the affected
+  # dynamic server container; Redis login data and the client stay untouched.
+  wechat-longlink-watchdog:
+    image: docker:cli
+    container_name: wechat-longlink-watchdog
+    restart: always
+    network_mode: none
+    environment:
+      CHECK_INTERVAL_SECONDS: ${LONGLINK_CHECK_INTERVAL_SECONDS:-30}
+      FAILURE_THRESHOLD: ${LONGLINK_FAILURE_THRESHOLD:-3}
+      PROXY_CONTAINER: wechat-longlink-proxy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./longlink-watchdog.sh:/usr/local/bin/longlink-watchdog.sh:ro
+    entrypoint: [ "/bin/sh", "/usr/local/bin/longlink-watchdog.sh" ]
+    depends_on:
+      wechat-longlink-proxy:
+        condition: service_healthy
+
   wechat-admin-mysql:
     image: registry.cn-shenzhen.aliyuncs.com/houhou/mysql:8.2.0
     restart: always

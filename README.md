@@ -221,6 +221,53 @@ Model:    中转站实际支持的模型名
 
 请先用中转站的 `/models` 或最小对话请求确认密钥和模型可用，再保存到机器人配置。
 
+### 多模型渠道
+
+增强版内置独立的模型渠道管理页，登录管理后台后直接打开：
+
+```text
+http://127.0.0.1:9001/api/v1/robot/ai-providers/ui
+```
+
+`9001` 仅绑定宿主机回环地址，不对局域网或公网开放。当前官方管理后端镜像只转发它已知的
+固定接口，因此增强版渠道页由客户端本机端口提供。使用仓库脚本重部署客户端即可保留原
+环境、技能挂载和回滚容器，同时建立该端口：
+
+```bash
+cd .deploy/local
+./redeploy-openchat-client.sh client_<机器人编码>
+```
+
+一个渠道同时保存 Base URL、API Key、对话模型、识图模型、绘图模型和群总结模型。
+可以创建任意数量的 OpenAI 兼容渠道，并把所选渠道应用到以下范围：
+
+- `全局默认`：未单独选择渠道的会话使用该渠道；
+- `指定群聊`：输入 `ROOM_ID@chatroom`，只切换该群；
+- `指定好友`：输入好友微信 ID，只切换该好友。
+
+渠道选择优先于旧版散落在全局、群聊或好友设置中的 Base URL、API Key 和模型字段。
+升级时会把不同的旧连接配置迁移为可复用渠道，但不会在迁移阶段擅自改变原来的选择；
+完成升级后请在渠道页明确选择全局渠道和需要单独覆盖的群聊渠道。
+
+对话、识图、绘图、群聊总结和长期记忆提取都会按当前会话范围解析渠道。对于只实现普通
+`chat/completions`、不支持 SSE 流式响应或工具调用的第三方中转站，客户端会自动降级为
+非流式或无工具对话，优先保证基础回复可用。
+
+管理页只返回脱敏后的 API Key。编辑已有渠道时密钥输入框留空即可保留原密钥。
+“测试连接”会向该渠道的 `/chat/completions` 发送一条最小请求，验证地址、密钥和对话
+模型是否可用。绘图和识图仍建议在测试群各做一次真实消息验收。
+
+对应 API：
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| `GET` | `/api/v1/robot/ai-providers` | 渠道列表及当前选择 |
+| `POST` | `/api/v1/robot/ai-providers` | 创建渠道 |
+| `PUT` | `/api/v1/robot/ai-providers/:id` | 更新渠道，空 `api_key` 保留旧密钥 |
+| `DELETE` | `/api/v1/robot/ai-providers/:id` | 删除未被使用的渠道 |
+| `POST` | `/api/v1/robot/ai-providers/:id/test` | 最小对话连通性测试 |
+| `POST` | `/api/v1/robot/ai-providers/select` | 按全局、群聊或好友切换渠道 |
+
 ### 模型继承规则
 
 `openchat-wx` 不锁定任何模型厂商。聊天、识图、绘图和群聊总结均可使用第三方
@@ -514,7 +561,23 @@ docker logs --tail=200 wechat-longlink-proxy
 ```
 
 `wechat-longlink-proxy` 用于把旧协议镜像访问的 `long.weixin.qq.com:80` 转发到当前 443
-端口。它应保持 `healthy`。
+端口。它应保持 `healthy`。本地 Compose 同时启动 `wechat-longlink-watchdog`：协议进程在
+长连接 EOF 后仍保持 HTTP 存活时，watchdog 连续三次确认无活动连接，便只重启对应的
+`server_<机器人编码>` 容器。Redis 登录缓存和机器人客户端不会被删除。
+
+确认守护任务：
+
+```bash
+docker ps --filter name=wechat-longlink-watchdog
+docker logs --tail=100 wechat-longlink-watchdog
+```
+
+默认每 30 秒检查一次、连续 3 次才恢复，可在 `.deploy/local/.env` 调整：
+
+```text
+LONGLINK_CHECK_INTERVAL_SECONDS=30
+LONGLINK_FAILURE_THRESHOLD=3
+```
 
 ### AI 报 connect: connection refused
 

@@ -20,6 +20,7 @@ import (
 	"github.com/xiaoguiwucan/openchat-wx/pkg/appx"
 	"github.com/xiaoguiwucan/openchat-wx/pkg/robot"
 	"github.com/xiaoguiwucan/openchat-wx/repository"
+	"github.com/xiaoguiwucan/openchat-wx/utils"
 	"github.com/xiaoguiwucan/openchat-wx/vars"
 )
 
@@ -627,7 +628,7 @@ func (s *ChatRoomService) ChatRoomAISummaryByChatRoomID(globalSettings *model.Gl
 		content = append(content, fmt.Sprintf(`[%s] {"%s": "%s"}--end--`, timeStr, message.Nickname, strings.ReplaceAll(message.Message, "\n", "。。")))
 	}
 
-	// 默认使用AI回复
+	// 默认使用旧配置；选择了模型渠道时，渠道配置拥有最高优先级。
 	aiApiKey := globalSettings.ChatAPIKey
 	if setting.ChatAPIKey != nil && *setting.ChatAPIKey != "" {
 		aiApiKey = *setting.ChatAPIKey
@@ -639,6 +640,22 @@ func (s *ChatRoomService) ChatRoomAISummaryByChatRoomID(globalSettings *model.Gl
 	summaryModel := globalSettings.ChatRoomSummaryModel
 	if setting.ChatRoomSummaryModel != nil && *setting.ChatRoomSummaryModel != "" {
 		summaryModel = *setting.ChatRoomSummaryModel
+	}
+	providerID := globalSettings.AIProviderID
+	if setting.AIProviderID != nil {
+		providerID = setting.AIProviderID
+	}
+	provider, err := NewAIProviderService(s.ctx).GetEnabledByID(providerID)
+	if err != nil {
+		return err
+	}
+	if provider != nil {
+		aiApiKey = provider.APIKey
+		aiApiBaseURL = strings.TrimRight(utils.NormalizeAIBaseURL(provider.BaseURL), "/")
+		summaryModel = provider.SummaryModel
+		if summaryModel == "" {
+			summaryModel = provider.ChatModel
+		}
 	}
 	report, err := s.generateChatRoomSummaryReport(context.Background(), aiApiKey, aiApiBaseURL, summaryModel, chatRoomName, content)
 	if err != nil {

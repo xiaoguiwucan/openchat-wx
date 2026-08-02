@@ -9,6 +9,7 @@ import (
 type ChatRoomSettings struct {
 	ID                        int64                `gorm:"column:id;primaryKey;autoIncrement;comment:群聊配置表主键ID" json:"id"`
 	ChatRoomID                string               `gorm:"column:chat_room_id;type:varchar(64);default:'';index:idx_chat_room_id;comment:群聊微信ID" json:"chat_room_id"`
+	AIProviderID              *int64               `gorm:"column:ai_provider_id;index;comment:群聊模型渠道ID，为空时使用旧配置或全局渠道" json:"ai_provider_id"`
 	ChatAIEnabled             *bool                `gorm:"column:chat_ai_enabled;default:false;comment:是否启用AI聊天功能" json:"chat_ai_enabled"`
 	ChatAITrigger             *string              `gorm:"column:chat_ai_trigger;type:varchar(20);default:'';comment:触发聊天AI的关键词" json:"chat_ai_trigger"`
 	FreeReplyEnabled          *bool                `gorm:"column:free_reply_enabled;default:false;comment:是否启用群聊自由回复" json:"free_reply_enabled"`

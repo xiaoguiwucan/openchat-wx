@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/xiaoguiwucan/openchat-wx/interface/settings"
@@ -17,8 +18,10 @@ type FriendSettingsService struct {
 	gsRepo         *repository.GlobalSettings
 	fsRepo         *repository.FriendSettings
 	contactRepo    *repository.Contact
+	aiProviderRepo *repository.AIProvider
 	globalSettings *model.GlobalSettings
 	friendSettings *model.FriendSettings
+	aiProvider     *model.AIProvider
 	sender         *model.Contact
 }
 
@@ -26,10 +29,11 @@ var _ settings.Settings = (*FriendSettingsService)(nil)
 
 func NewFriendSettingsService(ctx context.Context) *FriendSettingsService {
 	return &FriendSettingsService{
-		ctx:         ctx,
-		gsRepo:      repository.NewGlobalSettingsRepo(ctx, vars.DB),
-		fsRepo:      repository.NewFriendSettingsRepo(ctx, vars.DB),
-		contactRepo: repository.NewContactRepo(ctx, vars.DB),
+		ctx:            ctx,
+		gsRepo:         repository.NewGlobalSettingsRepo(ctx, vars.DB),
+		fsRepo:         repository.NewFriendSettingsRepo(ctx, vars.DB),
+		contactRepo:    repository.NewContactRepo(ctx, vars.DB),
+		aiProviderRepo: repository.NewAIProviderRepo(ctx, vars.DB),
 	}
 }
 
@@ -45,6 +49,20 @@ func (s *FriendSettingsService) InitByMessage(message *model.Message) error {
 		return err
 	}
 	s.friendSettings = friendSettings
+	providerID := globalSettings.AIProviderID
+	if friendSettings != nil && friendSettings.AIProviderID != nil {
+		providerID = friendSettings.AIProviderID
+	}
+	if providerID != nil && *providerID > 0 {
+		provider, providerErr := s.aiProviderRepo.GetByID(*providerID)
+		if providerErr != nil {
+			return providerErr
+		}
+		if provider == nil || !provider.Enabled {
+			return fmt.Errorf("所选模型渠道不存在或已停用: %d", *providerID)
+		}
+		s.aiProvider = provider
+	}
 	contact, err := s.contactRepo.GetContact(message.FromWxID)
 	if err != nil {
 		return err
@@ -113,6 +131,7 @@ func (s *FriendSettingsService) GetAIConfig() settings.AIConfig {
 			aiConfig.TTSSettings = s.friendSettings.TTSSettings
 		}
 	}
+	ApplyAIProvider(&aiConfig, s.aiProvider)
 	aiConfig.BaseURL = utils.NormalizeAIBaseURL(aiConfig.BaseURL)
 	return aiConfig
 }

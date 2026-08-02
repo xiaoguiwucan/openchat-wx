@@ -166,6 +166,16 @@ func (s *AgentService) ChatWithTools(
 		// 调用AI
 		msg, reasoning, err := s.streamChatCompletion(client, req)
 		if err != nil {
+			if len(req.Tools) > 0 {
+				log.Printf("[AICompat] 工具调用请求失败，降级为普通对话: %v", err)
+				fallbackReq := req
+				fallbackReq.Tools = nil
+				fallbackMsg, _, fallbackErr := s.streamChatCompletion(client, fallbackReq)
+				if fallbackErr == nil {
+					return fallbackMsg, nil
+				}
+				err = fmt.Errorf("%w; no-tools fallback error: %v", err, fallbackErr)
+			}
 			return openai.ChatCompletionMessage{}, fmt.Errorf("failed to call ai: %w", err)
 		}
 
@@ -257,7 +267,12 @@ func (s *AgentService) streamChatCompletion(
 		}
 	}
 	if err := stream.Err(); err != nil {
-		return openai.ChatCompletionMessage{}, "", fmt.Errorf("stream error: %w", err)
+		log.Printf("[AICompat] 流式对话失败，降级为非流式请求: %v", err)
+		msg, fallbackErr := nonStreamingChatCompletionMessage(s.ctx, client, req)
+		if fallbackErr != nil {
+			return openai.ChatCompletionMessage{}, "", fmt.Errorf("stream error: %w; non-stream fallback error: %v", err, fallbackErr)
+		}
+		return msg, "", nil
 	}
 	if len(acc.Choices) == 0 {
 		return openai.ChatCompletionMessage{}, "", fmt.Errorf("no choices in response")

@@ -31,6 +31,7 @@ var knowledgeCategoryCtl *controller.KnowledgeCategory
 var systemPromptCtl *controller.SystemPrompt
 var officialAccountCtx *controller.OfficialAccount
 var wxAppCtl *controller.WXApp
+var aiProviderCtl *controller.AIProvider
 
 func initController() {
 	chatHistoryCtl = controller.NewChatHistoryController()
@@ -57,6 +58,7 @@ func initController() {
 	systemPromptCtl = controller.NewSystemPromptController()
 	officialAccountCtx = controller.NewOfficialAccountController()
 	wxAppCtl = controller.NewWXAppController()
+	aiProviderCtl = controller.NewAIProviderController()
 }
 
 func RegisterRouter(r *gin.Engine) error {
@@ -213,6 +215,13 @@ func RegisterRouter(r *gin.Engine) error {
 
 	api.GET("/robot/global-settings", globalSettingsCtl.GetGlobalSettings)
 	api.POST("/robot/global-settings", globalSettingsCtl.SaveGlobalSettings)
+	api.GET("/robot/ai-providers/ui", aiProviderCtl.UI)
+	api.GET("/robot/ai-providers", aiProviderCtl.List)
+	api.POST("/robot/ai-providers", aiProviderCtl.Create)
+	api.PUT("/robot/ai-providers/:id", aiProviderCtl.Update)
+	api.DELETE("/robot/ai-providers/:id", aiProviderCtl.Delete)
+	api.POST("/robot/ai-providers/:id/test", aiProviderCtl.Test)
+	api.POST("/robot/ai-providers/select", aiProviderCtl.Select)
 	api.GET("/robot/friend-settings", friendSettingsCtl.GetFriendSettings)
 	api.POST("/robot/friend-settings", friendSettingsCtl.SaveFriendSettings)
 	api.GET("/robot/chat-room-settings", chatRoomSettingsCtl.GetChatRoomSettings)

@@ -5,14 +5,14 @@ import (
 	"log"
 	"os"
 	"time"
+
+	"github.com/gin-gonic/gin"
 	"github.com/xiaoguiwucan/openchat-wx/common_cron"
 	"github.com/xiaoguiwucan/openchat-wx/model"
 	"github.com/xiaoguiwucan/openchat-wx/pkg/shutdown"
 	"github.com/xiaoguiwucan/openchat-wx/router"
 	"github.com/xiaoguiwucan/openchat-wx/startup"
 	"github.com/xiaoguiwucan/openchat-wx/vars"
-
-	"github.com/gin-gonic/gin"
 )
 
 var Version = "unknown"
@@ -32,6 +32,9 @@ func main() {
 	}
 	if err := startup.SeedData(); err != nil {
 		log.Fatalf("种子数据初始化失败: %v", err)
+	}
+	if err := startup.SeedAIProviders(); err != nil {
+		log.Fatalf("模型渠道迁移失败: %v", err)
 	}
 	shutdownManager := shutdown.NewShutdownManager(30 * time.Second)
 	// 注册消息处理插件

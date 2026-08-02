@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/openai/openai-go/v3"
-	"github.com/openai/openai-go/v3/option"
 
 	"github.com/xiaoguiwucan/openchat-wx/interface/settings"
 	"github.com/xiaoguiwucan/openchat-wx/pkg/aicompat"
@@ -76,10 +75,7 @@ func (s *AIChatService) Chat(robotCtx robotctx.RobotContext, aiMessages []openai
 	// 群友单独的对话记录
 	aiMessages = append(systemMessages, aiMessages...)
 
-	client := openai.NewClient(
-		option.WithAPIKey(aiConfig.APIKey),
-		option.WithBaseURL(aiConfig.BaseURL),
-	)
+	client := newOpenAIClient(aiConfig.APIKey, aiConfig.BaseURL)
 	req := openai.ChatCompletionNewParams{
 		Model:    aiConfig.Model,
 		Messages: aiMessages,

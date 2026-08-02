@@ -2,12 +2,12 @@ package controller
 
 import (
 	"errors"
+
+	"github.com/gin-gonic/gin"
 	"github.com/xiaoguiwucan/openchat-wx/model"
 	"github.com/xiaoguiwucan/openchat-wx/pkg/appx"
 	"github.com/xiaoguiwucan/openchat-wx/pkg/utils"
 	"github.com/xiaoguiwucan/openchat-wx/service"
-
-	"github.com/gin-gonic/gin"
 )
 
 type GlobalSettings struct {
@@ -39,7 +39,16 @@ func (ct *GlobalSettings) SaveGlobalSettings(c *gin.Context) {
 		return
 	}
 	if req.ChatAIEnabled != nil && *req.ChatAIEnabled {
-		if req.ChatAPIKey == "" || req.ChatBaseURL == "" || req.ChatModel == "" || req.ImageRecognitionModel == "" || req.ChatPrompt == "" {
+		providerConfigured := false
+		if req.AIProviderID != nil && *req.AIProviderID > 0 {
+			provider, providerErr := service.NewAIProviderService(c).GetEnabledByID(req.AIProviderID)
+			if providerErr != nil {
+				resp.ToErrorResponse(providerErr)
+				return
+			}
+			providerConfigured = provider != nil
+		}
+		if (!providerConfigured && (req.ChatAPIKey == "" || req.ChatBaseURL == "" || req.ChatModel == "" || req.ImageRecognitionModel == "")) || req.ChatPrompt == "" {
 			resp.ToErrorResponse(errors.New("参数错误"))
 			return
 		}

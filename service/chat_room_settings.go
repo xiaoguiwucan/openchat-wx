@@ -21,8 +21,10 @@ type ChatRoomSettingsService struct {
 	Message          *model.Message
 	gsRepo           *repository.GlobalSettings
 	crsRepo          *repository.ChatRoomSettings
+	aiProviderRepo   *repository.AIProvider
 	globalSettings   *model.GlobalSettings
 	chatRoomSettings *model.ChatRoomSettings
+	aiProvider       *model.AIProvider
 	isFreeReply      bool
 }
 
@@ -30,9 +32,10 @@ var _ settings.Settings = (*ChatRoomSettingsService)(nil)
 
 func NewChatRoomSettingsService(ctx context.Context) *ChatRoomSettingsService {
 	return &ChatRoomSettingsService{
-		ctx:     ctx,
-		gsRepo:  repository.NewGlobalSettingsRepo(ctx, vars.DB),
-		crsRepo: repository.NewChatRoomSettingsRepo(ctx, vars.DB),
+		ctx:            ctx,
+		gsRepo:         repository.NewGlobalSettingsRepo(ctx, vars.DB),
+		crsRepo:        repository.NewChatRoomSettingsRepo(ctx, vars.DB),
+		aiProviderRepo: repository.NewAIProviderRepo(ctx, vars.DB),
 	}
 }
 
@@ -52,6 +55,20 @@ func (s *ChatRoomSettingsService) InitByMessage(message *model.Message) error {
 		return err
 	}
 	s.chatRoomSettings = chatRoomSettings
+	providerID := globalSettings.AIProviderID
+	if chatRoomSettings != nil && chatRoomSettings.AIProviderID != nil {
+		providerID = chatRoomSettings.AIProviderID
+	}
+	if providerID != nil && *providerID > 0 {
+		provider, providerErr := s.aiProviderRepo.GetByID(*providerID)
+		if providerErr != nil {
+			return providerErr
+		}
+		if provider == nil || !provider.Enabled {
+			return fmt.Errorf("所选模型渠道不存在或已停用: %d", *providerID)
+		}
+		s.aiProvider = provider
+	}
 	return nil
 }
 
@@ -115,6 +132,7 @@ func (s *ChatRoomSettingsService) GetAIConfig() settings.AIConfig {
 			aiConfig.TTSSettings = s.chatRoomSettings.TTSSettings
 		}
 	}
+	ApplyAIProvider(&aiConfig, s.aiProvider)
 	aiConfig.BaseURL = utils.NormalizeAIBaseURL(aiConfig.BaseURL)
 	return aiConfig
 }

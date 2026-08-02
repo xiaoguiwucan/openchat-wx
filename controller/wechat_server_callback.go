@@ -2,12 +2,12 @@ package controller
 
 import (
 	"log"
+
+	"github.com/gin-gonic/gin"
 	"github.com/xiaoguiwucan/openchat-wx/dto"
 	"github.com/xiaoguiwucan/openchat-wx/pkg/appx"
 	"github.com/xiaoguiwucan/openchat-wx/pkg/robot"
 	"github.com/xiaoguiwucan/openchat-wx/service"
-
-	"github.com/gin-gonic/gin"
 )
 
 type WechatServerCallback struct {
@@ -19,13 +19,13 @@ func NewWechatServerCallbackController() *WechatServerCallback {
 
 func (ct *WechatServerCallback) SyncMessageCallback(c *gin.Context) {
 	wechatID := c.Param("wechatID")
-	log.Printf("Received SyncMessageCallback for wechatID: %s", wechatID)
 	var req robot.ClientResponse[robot.SyncMessage]
 	resp := appx.NewResponse(c)
 	if err := c.ShouldBindJSON(&req); err != nil {
 		resp.ToErrorResponse(err)
 		return
 	}
+	log.Printf("Received SyncMessageCallback for wechatID: %s, add_msgs=%d", wechatID, len(req.Data.AddMsgs))
 	service.NewLoginService(c).SyncMessageCallback(wechatID, req.Data)
 
 	resp.ToResponse(nil)

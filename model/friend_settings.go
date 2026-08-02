@@ -7,6 +7,7 @@ import (
 type FriendSettings struct {
 	ID                    int64          `gorm:"column:id;primaryKey;autoIncrement;comment:公共配置表主键ID" json:"id"`
 	WeChatID              string         `gorm:"column:wechat_id;type:varchar(64);default:'';index:idx_wechat_id;comment:好友微信ID" json:"wechat_id"`
+	AIProviderID          *int64         `gorm:"column:ai_provider_id;index;comment:好友模型渠道ID，为空时使用旧配置或全局渠道" json:"ai_provider_id"`
 	ChatAIEnabled         *bool          `gorm:"column:chat_ai_enabled;default:false;comment:是否启用AI聊天功能" json:"chat_ai_enabled"`
 	ChatBaseURL           *string        `gorm:"column:chat_base_url;type:varchar(255);default:'';comment:聊天AI的基础URL地址" json:"chat_base_url"`
 	ChatAPIKey            *string        `gorm:"column:chat_api_key;type:varchar(255);default:'';comment:聊天AI的API密钥" json:"chat_api_key"`
