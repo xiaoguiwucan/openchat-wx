@@ -1,0 +1,687 @@
+import {
+	ArrowUpOutlined,
+	CameraOutlined,
+	CloseCircleFilled,
+	DeleteFilled,
+	EllipsisOutlined,
+	HeartFilled,
+	HeartOutlined,
+	SettingOutlined,
+} from '@ant-design/icons';
+import { useBoolean, useMemoizedFn, useRequest, useSetState } from 'ahooks';
+import { App, Avatar, Button, Col, Dropdown, Flex, List, Row, Skeleton, Space, Spin, Tooltip } from 'antd';
+import type { MenuProps } from 'antd';
+import dayjs from 'dayjs';
+import React from 'react';
+import InfiniteScroll from 'react-infinite-scroll-component';
+import type * as Api from '@/api/wechat-robot/wechat-robot';
+import type { DtoSnsObject as SnsObject } from '@/api/wechat-robot/wechat-robot';
+import { DefaultAvatar } from '@/constant';
+import CommentFilled from '@/icons/CommentFilled';
+import CommentOutlined from '@/icons/CommentOutlined';
+import GroupFilled from '@/icons/GroupFilled';
+import CommentMoment from './CommentMoment';
+import MediaList, { MediaVideo } from './MediaList';
+import MomentSettings from './MomentSettings';
+import PostMoment from './PostMoment';
+import { Container } from './styled';
+
+interface IProps {
+	robotId: number;
+	robot: NonNullable<Api.Robot.ViewList.ResponseBody['data']>;
+}
+
+type IContact = NonNullable<NonNullable<Api.Contact.ListList.ResponseBody['data']>['items']>[number];
+type IMoment = NonNullable<NonNullable<Api.Moments.ListList.ResponseBody['data']>['ObjectList']>[number];
+
+interface IPrevState {
+	done?: boolean;
+	frist_page_md5?: string;
+	max_id?: string;
+	current_md5?: string;
+	current_id?: string;
+	moments?: IMoment[];
+}
+
+interface ICommentState {
+	open?: boolean;
+	momentId?: string;
+	replyCommnetId?: number;
+	replyContent?: string;
+}
+
+const Moments = (props: IProps) => {
+	const { message, modal } = App.useApp();
+
+	// frist_page_md5 单词拼写原本是协议拼错了
+	const [prevState, setPrevState] = useSetState<IPrevState>({ frist_page_md5: '', max_id: '0', moments: [] });
+	const [commentState, setCommentState] = useSetState<ICommentState>({});
+	const [momentSettingsOpen, setMomentSettingsOpen] = useBoolean(false);
+	const [newPostMomentOpen, setNewPostMomentOpen] = useBoolean(false);
+
+	// 记录一下朋友圈ID，避免重复了
+	const momentIds = new Set<string>();
+	const commentUserMap = new Map<string, string>();
+
+	const { runAsync: getContacts } = useRequest(
+		async (contactIds: string[]) => {
+			const resp = await window.wechatRobotClient.contact.listList({
+				id: props.robotId,
+				type: 'friend',
+				contact_ids: contactIds,
+				page_index: 1,
+				page_size: 10,
+			});
+			return resp.data?.data;
+		},
+		{
+			manual: true,
+			onError: reason => {
+				message.error(reason.message);
+			},
+		},
+	);
+
+	const onCommentMomentRefresh = useMemoizedFn((snsObject: SnsObject) => {
+		const nextMoments = [...(prevState.moments || [])];
+		const targetMomentIndex = nextMoments.findIndex(m => m.IdStr === snsObject.IdStr);
+		if (targetMomentIndex === -1) {
+			return;
+		}
+		snsObject.Avatar = nextMoments[targetMomentIndex].Avatar;
+		nextMoments[targetMomentIndex] = snsObject;
+		setPrevState({ moments: nextMoments });
+	});
+
+	const removeMomentCallback = (moments: SnsObject[], momentId: string): SnsObject[] => {
+		const nextMoments = [...moments];
+		const targetMomentIndex = nextMoments.findIndex(m => m.IdStr === momentId);
+		if (targetMomentIndex === -1) {
+			return nextMoments;
+		}
+		nextMoments.splice(targetMomentIndex, 1);
+		return nextMoments;
+	};
+
+	const removeCommentCallback = (moments: SnsObject[], momentId: string, commentId?: number): SnsObject[] => {
+		const nextMoments = [...moments];
+		const targetMomentIndex = nextMoments.findIndex(m => m.IdStr === momentId);
+		if (targetMomentIndex === -1) {
+			return nextMoments;
+		}
+		const targetMoment = structuredClone(nextMoments[targetMomentIndex]);
+		targetMoment.CommentUserList = targetMoment.CommentUserList?.filter(c => c.CommentId !== commentId);
+		targetMoment.CommentCount = targetMoment.CommentUserList?.length || 0;
+		nextMoments[targetMomentIndex] = targetMoment;
+		return nextMoments;
+	};
+
+	const unlikeCommentCallback = (moments: SnsObject[], momentId: string): SnsObject[] => {
+		const nextMoments = [...moments];
+		const targetMomentIndex = nextMoments.findIndex(m => m.IdStr === momentId);
+		if (targetMomentIndex === -1) {
+			return nextMoments;
+		}
+		const targetMoment = structuredClone(nextMoments[targetMomentIndex]);
+		targetMoment.LikeUserList = targetMoment.LikeUserList?.filter(c => c.Username !== props.robot.wechat_id);
+		targetMoment.LikeUserListCount = targetMoment.LikeUserList?.length || 0;
+		nextMoments[targetMomentIndex] = targetMoment;
+		return nextMoments;
+	};
+
+	const { runAsync: momentComment } = useRequest(
+		async (type: number, momentId: string, content?: string, replyCommnetId?: number) => {
+			const resp = await window.wechatRobotClient.moments.commentCreate(
+				{
+					id: props.robotId,
+				},
+				{
+					id: props.robotId,
+					MomentId: momentId,
+					Type: type,
+					ReplyCommnetId: replyCommnetId as number,
+					Content: content,
+				},
+			);
+			return resp.data?.data;
+		},
+		{
+			manual: true,
+			onSuccess: (resp, params) => {
+				switch (params[0]) {
+					case 1:
+						message.success('点赞成功');
+						onCommentMomentRefresh(resp!);
+						break;
+					case 2:
+						break;
+					case 3:
+						break;
+					case 4:
+						break;
+					case 5:
+						break;
+					default:
+					//
+				}
+			},
+			onError: reason => {
+				message.error(reason.message);
+			},
+		},
+	);
+
+	const { runAsync: momentOp } = useRequest(
+		async (type: number, momentId: string, commentId?: number) => {
+			const resp = await window.wechatRobotClient.moments.operateCreate(
+				{
+					id: props.robotId,
+				},
+				{
+					id: props.robotId,
+					Type: type,
+					MomentID: momentId,
+					CommentId: commentId,
+				},
+			);
+			return resp.data?.data;
+		},
+		{
+			manual: true,
+			onSuccess: (_, params) => {
+				switch (params[0]) {
+					case 1:
+						message.success('删除朋友圈成功');
+						setPrevState({
+							moments: removeMomentCallback(prevState.moments || [], params[1]),
+						});
+						break;
+					case 2:
+						message.success('设为隐私成功');
+						goToTop();
+						break;
+					case 3:
+						message.success('设为公开成功');
+						goToTop();
+						break;
+					case 4:
+						message.success('删除评论成功');
+						setPrevState({
+							moments: removeCommentCallback(prevState.moments || [], params[1], params[2]),
+						});
+						break;
+					case 5:
+						message.success('取消点赞成功');
+						setPrevState({
+							moments: unlikeCommentCallback(prevState.moments || [], params[1]),
+						});
+						break;
+					default:
+					//
+				}
+			},
+			onError: reason => {
+				message.error(reason.message);
+			},
+		},
+	);
+
+	const { runAsync: loadMoreData, loading: getLoading } = useRequest(
+		async (md5?: string, id?: string) => {
+			const resp = await window.wechatRobotClient.moments.listList({
+				id: props.robotId,
+				frist_page_md5: md5 !== undefined ? md5 : prevState.frist_page_md5,
+				max_id: id !== undefined ? id : prevState.max_id!,
+			});
+			if (resp.data.data?.ObjectList?.length) {
+				const nextState: IPrevState = { moments: [...(prevState.moments || [])] };
+				// 获取联系人头像
+				const contactIds = [
+					...new Set(resp.data.data.ObjectList.map(item => item.Username).filter(item => !!item)),
+				] as string[];
+				const contactMap: Record<string, IContact> = {};
+				try {
+					const contactResp = await getContacts(contactIds);
+					(contactResp!.items || []).forEach(item => {
+						contactMap[item.wechat_id!] = item;
+					});
+				} catch {
+					//
+				}
+				// 处理朋友圈数据
+				resp.data.data.ObjectList.forEach(item => {
+					if (item.Username === props.robot.wechat_id) {
+						// 机器人自己账号发的朋友圈
+						item.Avatar = props.robot.avatar;
+					} else if (contactMap[item.Username!]) {
+						item.Avatar = contactMap[item.Username!].avatar;
+						if (contactMap[item.Username!].remark) {
+							item.Nickname = contactMap[item.Username!].remark;
+						}
+					}
+					if (momentIds.has(item.IdStr!)) {
+						const targetIndex = nextState.moments!.findIndex(m => m.IdStr === item.IdStr);
+						if (targetIndex !== -1) {
+							nextState.moments![targetIndex] = item; // 更新已有的朋友圈
+						} else {
+							nextState.moments!.push(item);
+						}
+					} else {
+						nextState.moments!.push(item);
+						momentIds.add(item.IdStr!);
+					}
+				});
+
+				const len = resp.data.data.ObjectList.length;
+				nextState.current_id = id !== undefined ? id : nextState.max_id;
+				nextState.current_md5 = md5 !== undefined ? md5 : nextState.frist_page_md5;
+				if (resp.data.data?.FirstPageMd5) {
+					nextState.frist_page_md5 = resp.data.data.FirstPageMd5;
+				}
+				if (resp.data.data?.ObjectList?.length) {
+					nextState.max_id = resp.data.data.ObjectList[len - 1].IdStr!;
+				}
+				if (len < 10) {
+					nextState.done = true; // 没有更多数据了
+				} else {
+					nextState.done = false; // 还有更多数据
+				}
+
+				setPrevState(nextState);
+			} else {
+				setPrevState({ done: true });
+			}
+		},
+		{
+			manual: false,
+			onError: reason => {
+				message.error(reason.message);
+			},
+		},
+	);
+
+	const goToTop = useMemoizedFn(() => {
+		setPrevState({ done: false, max_id: '0', frist_page_md5: '', moments: [] });
+		setTimeout(() => {
+			loadMoreData();
+		}, 90);
+	});
+
+	const onCommentMomentClose = useMemoizedFn(() => {
+		setCommentState({ open: false, momentId: undefined, replyCommnetId: undefined });
+	});
+
+	const renderLikes = (item: IMoment) => {
+		return (
+			<>
+				<HeartOutlined className="like" />
+				{item.LikeUserList!.map((user, index) => {
+					return (
+						<span key={user.Username}>
+							<b className="user">{user.Nickname}</b>
+							{index === item.LikeUserList!.length - 1 ? null : <span style={{ marginRight: 3 }}>,</span>}
+						</span>
+					);
+				})}
+			</>
+		);
+	};
+
+	const renderComments = (item: IMoment) => {
+		return item.CommentUserList!.map(item2 => {
+			commentUserMap.set(item2.Username!, item2.Nickname!);
+			if (item2.DeleteFlag === 1) {
+				return null;
+			}
+			return (
+				<p
+					className="comment-item"
+					key={`${item2.CommentFlag}-${item2.CommentId}-${item2.CommentId2}`}
+				>
+					<b className="user">{commentUserMap.get(item2.Username!) || item2.Username}</b>
+					{!!item2.ReplyUsername && (
+						<span>
+							{' '}
+							@ <b className="user">{commentUserMap.get(item2.ReplyUsername) || item2.ReplyUsername}</b>
+						</span>
+					)}
+					<span>: </span>
+					<span className="comment">{item2.Content}</span>
+					{item2.Username === props.robot.wechat_id ? (
+						<CloseCircleFilled
+							className="delete-comment"
+							onClick={async () => {
+								modal.confirm({
+									title: '删除评论',
+									content: (
+										<>
+											<p style={{ color: '#5c5c5c' }}>{item2.Content}</p>
+											<p>确定要删除这条评论吗？</p>
+										</>
+									),
+									okText: '删除',
+									onOk: async () => {
+										// 删除评论
+										await momentOp(4, item.IdStr!, item2.CommentId);
+									},
+								});
+							}}
+						/>
+					) : (
+						<CommentFilled
+							className="reply-comment"
+							onClick={() => {
+								setCommentState({
+									open: true,
+									momentId: item.IdStr!,
+									replyCommnetId: item2.CommentId,
+									replyContent: item2.Content,
+								});
+							}}
+						/>
+					)}
+				</p>
+			);
+		});
+	};
+
+	const getPrivateText = (item: IMoment) => {
+		return !item.TimelineObject?.Private ? '设为隐私' : '设为公开';
+	};
+
+	return (
+		<Container>
+			<Spin spinning={getLoading}>
+				<Flex
+					justify="space-between"
+					align="middle"
+					style={{ marginBottom: 16 }}
+				>
+					<Row
+						align="middle"
+						wrap={false}
+						gutter={8}
+					>
+						<Col flex="0 0 300px"></Col>
+						<Col flex="0 0 260px"></Col>
+					</Row>
+					<Space>
+						<Button
+							color="primary"
+							variant="filled"
+							icon={<ArrowUpOutlined />}
+							onClick={goToTop}
+						>
+							返回朋友圈首页
+						</Button>
+						<Button
+							color="primary"
+							variant="filled"
+							icon={<CameraOutlined />}
+							onClick={setNewPostMomentOpen.setTrue}
+						>
+							发朋友圈
+						</Button>
+						<Button
+							color="primary"
+							variant="filled"
+							style={{ marginRight: 8 }}
+							icon={<SettingOutlined />}
+							onClick={async () => {
+								setMomentSettingsOpen.setTrue();
+							}}
+						>
+							朋友圈设置
+						</Button>
+					</Space>
+				</Flex>
+				<div
+					id="moments-list"
+					style={{
+						height: 'calc(100vh - 185px)',
+						overflowY: 'auto',
+						border: '1px solid rgba(5,5,5,0.06)',
+						borderRadius: 4,
+						marginRight: 2,
+					}}
+				>
+					<InfiniteScroll
+						dataLength={prevState.moments?.length || 0}
+						next={loadMoreData}
+						hasMore={!prevState.done}
+						loader={
+							<div style={{ padding: '0 8px' }}>
+								<Skeleton
+									avatar
+									paragraph={{ rows: 1 }}
+									active
+								/>
+							</div>
+						}
+						endMessage={null}
+						scrollableTarget="moments-list"
+					>
+						<List
+							rowKey="IdStr"
+							itemLayout="horizontal"
+							dataSource={prevState.moments || []}
+							renderItem={item => {
+								const items: MenuProps['items'] = [
+									{
+										label: (
+											<>
+												<CommentOutlined style={{ marginRight: 8 }} />
+												评论
+											</>
+										),
+										key: 'comment',
+									},
+								];
+								if (item.LikeFlag === 1) {
+									items.unshift({
+										label: (
+											<>
+												<HeartFilled style={{ color: '#ff4d4f', marginRight: 8 }} />
+												取消点赞
+											</>
+										),
+										key: 'unlike',
+									});
+								} else {
+									items.unshift({
+										label: (
+											<>
+												<HeartOutlined style={{ marginRight: 8 }} />
+												点赞
+											</>
+										),
+										key: 'like',
+									});
+								}
+								const media = item.TimelineObject?.ContentObject?.MediaList?.Media;
+								const momentLocation = item.TimelineObject?.Location;
+
+								return (
+									<List.Item>
+										<List.Item.Meta
+											avatar={
+												<Avatar
+													style={{ marginLeft: 8 }}
+													src={item.Avatar || DefaultAvatar}
+												/>
+											}
+											title={
+												<>
+													<span className="moment-nickname">{item.Nickname || item.Username}</span>
+												</>
+											}
+											description={
+												<>
+													{!!item.TimelineObject?.ContentDesc && (
+														<pre className="moment-content">{item.TimelineObject.ContentDesc}</pre>
+													)}
+													{Array.isArray(media) ? (
+														<>
+															{media.length === 1 && Number(media[0].Type) === 6 ? (
+																<MediaVideo
+																	dataSource={media[0]}
+																	videoDownloadUrl={`/api/v1/moments/down-media?id=${props.robotId}&url=${encodeURIComponent(media[0]!.URL!.Value!)}`}
+																/>
+															) : (
+																<MediaList
+																	className="moment-media-list"
+																	dataSource={media}
+																/>
+															)}
+														</>
+													) : null}
+													<Flex
+														justify="space-between"
+														align="middle"
+													>
+														<Space size="small">
+															<span>{dayjs(Number(item.CreateTime) * 1000).fromNow()}</span>
+															{(momentLocation?.PoiName || momentLocation?.City || momentLocation?.PoiAddress) && (
+																<span className="moment-location">
+																	{momentLocation?.PoiName || momentLocation?.City || momentLocation?.PoiAddress}
+																</span>
+															)}
+															{item.Username === props.robot.wechat_id && (
+																<Tooltip title={getPrivateText(item)}>
+																	<GroupFilled
+																		className="moment-privacy"
+																		style={!item.TimelineObject?.Private ? {} : { color: '#5c5959' }}
+																		onClick={() => {
+																			modal.confirm({
+																				title: getPrivateText(item),
+																				width: 330,
+																				content: <>确定要将这条朋友圈{getPrivateText(item)}吗？</>,
+																				okText: getPrivateText(item),
+																				onOk: async () => {
+																					// 当前公开，设为隐私
+																					if (!item.TimelineObject?.Private) {
+																						await momentOp(2, item.IdStr!);
+																						goToTop();
+																						return;
+																					}
+																					// 设为公开
+																					await momentOp(3, item.IdStr!);
+																					goToTop();
+																				},
+																				cancelText: '取消',
+																			});
+																		}}
+																	/>
+																</Tooltip>
+															)}
+															{item.Username === props.robot.wechat_id && (
+																<Tooltip title="删除">
+																	<DeleteFilled
+																		className="moment-delete"
+																		onClick={() => {
+																			modal.confirm({
+																				title: '朋友圈删除确认',
+																				content: <>确定要删除这条朋友圈吗？</>,
+																				okText: '删除',
+																				onOk: async () => {
+																					await momentOp(1, item.IdStr!);
+																				},
+																				cancelText: '取消',
+																			});
+																		}}
+																	/>
+																</Tooltip>
+															)}
+														</Space>
+														<div style={{ marginRight: 8 }}>
+															<Dropdown
+																menu={{
+																	items,
+																	onClick: async ev => {
+																		switch (ev.key) {
+																			case 'like':
+																				await momentComment(1, item.IdStr!);
+																				break;
+																			case 'unlike':
+																				// 设为公开
+																				await momentOp(5, item.IdStr!);
+																				break;
+																			case 'comment':
+																				setCommentState({
+																					open: true,
+																					momentId: item.IdStr!,
+																					replyCommnetId: undefined,
+																					replyContent: undefined,
+																				});
+																				break;
+																		}
+																	},
+																}}
+															>
+																<Button
+																	key="right"
+																	type="primary"
+																	size="small"
+																	ghost
+																	icon={<EllipsisOutlined />}
+																/>
+															</Dropdown>
+														</div>
+													</Flex>
+													{/* 只有点赞数据 */}
+													{!!item.LikeUserList?.length && !item.CommentUserList?.length && (
+														<div className="moment-likes">{renderLikes(item)}</div>
+													)}
+													{/* 只有评论数据 */}
+													{!item.LikeUserList?.length && !!item.CommentUserList?.length && (
+														<div className="moment-comments">{renderComments(item)}</div>
+													)}
+													{/* 有评论、点赞数据 */}
+													{!!item.LikeUserList?.length && !!item.CommentUserList?.length && (
+														<div className="moment-actions">
+															<div className="likes">{renderLikes(item)}</div>
+															<div className="comments">{renderComments(item)}</div>
+														</div>
+													)}
+												</>
+											}
+										/>
+									</List.Item>
+								);
+							}}
+						/>
+					</InfiniteScroll>
+					{newPostMomentOpen && (
+						<PostMoment
+							open={newPostMomentOpen}
+							robotId={props.robotId}
+							robot={props.robot}
+							onRefresh={goToTop}
+							onClose={setNewPostMomentOpen.setFalse}
+						/>
+					)}
+					{commentState.open && (
+						<CommentMoment
+							open={commentState.open}
+							robotId={props.robotId}
+							momentId={commentState.momentId!}
+							replyCommnetId={commentState.replyCommnetId}
+							replyContent={commentState.replyContent}
+							onRefresh={onCommentMomentRefresh}
+							onClose={onCommentMomentClose}
+						/>
+					)}
+					{momentSettingsOpen && (
+						<MomentSettings
+							open={momentSettingsOpen}
+							robotId={props.robotId}
+							onClose={setMomentSettingsOpen.setFalse}
+						/>
+					)}
+				</div>
+			</Spin>
+		</Container>
+	);
+};
+
+export default React.memo(Moments);

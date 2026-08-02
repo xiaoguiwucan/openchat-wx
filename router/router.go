@@ -215,6 +215,8 @@ func RegisterRouter(r *gin.Engine) error {
 
 	api.GET("/robot/global-settings", globalSettingsCtl.GetGlobalSettings)
 	api.POST("/robot/global-settings", globalSettingsCtl.SaveGlobalSettings)
+	api.GET("/robot/free-reply-settings", globalSettingsCtl.GetFreeReplySettings)
+	api.POST("/robot/free-reply-settings", globalSettingsCtl.SaveFreeReplySettings)
 	api.GET("/robot/ai-providers/ui", aiProviderCtl.UI)
 	api.GET("/robot/ai-providers", aiProviderCtl.List)
 	api.POST("/robot/ai-providers", aiProviderCtl.Create)

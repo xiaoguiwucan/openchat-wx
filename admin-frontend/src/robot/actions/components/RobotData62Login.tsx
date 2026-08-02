@@ -1,0 +1,211 @@
+import { LockOutlined, UserOutlined } from '@ant-design/icons';
+import { useMemoizedFn, useRequest, useSetState } from 'ahooks';
+import { App, Button, Form, Input, Modal, Spin } from 'antd';
+import React, { useEffect } from 'react';
+import type * as Api from '@/api/wechat-robot/wechat-robot';
+
+type IRobot = NonNullable<NonNullable<Api.Robot.ListList.ResponseBody['data']>['items']>[number];
+
+interface IProps {
+	robotId: number;
+	robot: IRobot;
+	open: boolean;
+	onClose: () => void;
+	onRefresh: () => void;
+}
+
+const RobotData62Login = (props: IProps) => {
+	const { message } = App.useApp();
+
+	const [smsState, SetSmsState] = useSetState({ open: false, smsCode: '', countdown: 0 });
+
+	const [form] = Form.useForm<Api.Robot.LoginA16Create.RequestBody>();
+
+	useEffect(() => {
+		let timer: number | undefined;
+		if (smsState.countdown > 0) {
+			timer = window.setInterval(() => {
+				SetSmsState({ countdown: smsState.countdown - 1 });
+			}, 1000);
+			return () => clearInterval(timer);
+		}
+		return () => {
+			clearInterval(timer);
+		};
+	}, [smsState.countdown]);
+
+	const { data, runAsync, loading } = useRequest(
+		async (data: Api.Robot.LoginData62Create.RequestBody) => {
+			const resp = await window.wechatRobotClient.robot.loginData62Create(
+				{
+					id: props.robotId,
+				},
+				data,
+			);
+			return resp.data?.data;
+		},
+		{
+			manual: true,
+			onSuccess: resp => {
+				if (resp?.Cookie && resp?.checkUrl) {
+					message.success(`已成功发送短信验证码`);
+					SetSmsState({ open: true, smsCode: '', countdown: 60 });
+				} else if (resp?.authSectResp?.uin) {
+					message.success(`登录成功`);
+					props.onRefresh();
+					props.onClose();
+				} else {
+					message.error(`登录失败，原因未知`);
+				}
+			},
+			onError: reason => {
+				message.error(reason.message);
+			},
+		},
+	);
+
+	const { runAsync: smsAgain, loading: againLoading } = useRequest(
+		async (data: Api.Robot.LoginData62SmsAgainCreate.RequestBody) => {
+			const resp = await window.wechatRobotClient.robot.loginData62SmsAgainCreate(
+				{
+					id: props.robotId,
+				},
+				data,
+			);
+			return resp.data?.data;
+		},
+		{
+			manual: true,
+			onSuccess: () => {
+				message.info('验证码已发送');
+			},
+			onError: reason => {
+				message.error(reason.message);
+			},
+		},
+	);
+
+	const { runAsync: smsVerify, loading: verifyLoading } = useRequest(
+		async (data: Api.Robot.LoginData62SmsVerifyCreate.RequestBody) => {
+			const resp = await window.wechatRobotClient.robot.loginData62SmsVerifyCreate(
+				{
+					id: props.robotId,
+				},
+				data,
+			);
+			return resp.data?.data;
+		},
+		{
+			manual: true,
+			onSuccess: () => {
+				message.success('登录成功');
+				props.onRefresh();
+				props.onClose();
+			},
+			onError: reason => {
+				message.error(reason.message);
+			},
+		},
+	);
+
+	const onSmsClose = useMemoizedFn(() => {
+		SetSmsState({ open: false, smsCode: '' });
+	});
+
+	return (
+		<Modal
+			title="登录iPhone设备"
+			width="min(475px, calc(100vw - 32px))"
+			open={props.open}
+			confirmLoading={loading}
+			onOk={async () => {
+				const values = await form.validateFields();
+				await runAsync(values);
+			}}
+			okText="登录"
+			onCancel={props.onClose}
+		>
+			<Form
+				layout="vertical"
+				form={form}
+				autoComplete="off"
+			>
+				<Form.Item
+					name="username"
+					label=""
+					rules={[{ required: true, message: '请输入微信ID' }]}
+					initialValue={props.robot.wechat_id || ''}
+				>
+					<Input
+						prefix={<UserOutlined />}
+						placeholder="请输入微信ID"
+						allowClear
+					/>
+				</Form.Item>
+				<Form.Item
+					name="password"
+					label=""
+					rules={[{ required: true, message: '请输入密码' }]}
+				>
+					<Input.Password
+						prefix={<LockOutlined />}
+						placeholder="请输入密码"
+						allowClear
+					/>
+				</Form.Item>
+				{smsState.open && (
+					<Modal
+						title="请输入短信验证码"
+						open={smsState.open}
+						onCancel={onSmsClose}
+						width={256}
+						mask={{
+							closable: false,
+						}}
+						footer={null}
+					>
+						<Spin
+							spinning={verifyLoading}
+							description="正在验证..."
+						>
+							<div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+								<Input.OTP
+									value={smsState.smsCode}
+									onChange={async value => {
+										SetSmsState({ smsCode: value });
+										if (value?.length && value.length >= 6) {
+											await smsVerify({
+												Cookie: data?.Cookie || '',
+												Url: data?.checkUrl || '',
+												Sms: value,
+											});
+										}
+									}}
+								/>
+							</div>
+							<p style={{ margin: '16px 0 0 0', textAlign: 'right', fontSize: 12 }}>
+								{!!smsState.countdown && <span>{smsState.countdown}秒后</span>}
+								<Button
+									type="link"
+									size="small"
+									loading={againLoading}
+									disabled={smsState.countdown > 0}
+									onClick={() => {
+										smsAgain({
+											Cookie: data?.Cookie || '',
+											Url: data?.AgainUrl || '',
+										});
+									}}
+								>
+									重新发送
+								</Button>
+							</p>
+						</Spin>
+					</Modal>
+				)}
+			</Form>
+		</Modal>
+	);
+};
+
+export default React.memo(RobotData62Login);

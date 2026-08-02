@@ -1,0 +1,16 @@
+# syntax=docker/dockerfile:1.7
+FROM golang:1.25-alpine AS builder
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+COPY cmd/admin-proxy ./cmd/admin-proxy
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/openchat-admin-proxy ./cmd/admin-proxy
+
+FROM alpine:3.22
+RUN apk add --no-cache ca-certificates && adduser -D -H -u 10001 openchat
+COPY --from=builder /out/openchat-admin-proxy /usr/local/bin/openchat-admin-proxy
+USER openchat
+EXPOSE 9000
+ENTRYPOINT ["/usr/local/bin/openchat-admin-proxy"]

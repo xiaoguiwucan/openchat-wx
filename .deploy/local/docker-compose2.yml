@@ -170,7 +170,10 @@ services:
       - wechat-robot
       
   wechat-robot-admin-frontend:
-    image: registry.cn-shenzhen.aliyuncs.com/houhou/wechat-robot-admin-frontend:latest
+    build:
+      context: ../../admin-frontend
+      dockerfile: Dockerfile
+    image: openchat-wx-admin-frontend:local
     container_name: wechat-robot-admin-frontend
     restart: always
     networks:
@@ -181,6 +184,27 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+
+  openchat-admin-proxy:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.admin-proxy
+    image: openchat-wx-admin-proxy:local
+    container_name: openchat-admin-proxy
+    restart: always
+    networks:
+      - wechat-robot
+    environment:
+      ADMIN_AUTH_URL: http://wechat-robot-admin-backend:9000/api/v1/user/self
+    depends_on:
+      wechat-robot-admin-backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9000/healthz | grep -q '\"status\":\"ok\"'"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   wechat-robot-admin-backend:
     image: registry.cn-shenzhen.aliyuncs.com/houhou/wechat-robot-admin-backend:latest
@@ -244,6 +268,8 @@ services:
       wechat-robot-admin-frontend:
         condition: service_healthy
       wechat-robot-admin-backend:
+        condition: service_healthy
+      openchat-admin-proxy:
         condition: service_healthy
 
 networks:

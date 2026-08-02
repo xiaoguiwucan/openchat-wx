@@ -1,0 +1,140 @@
+import type { FormInstance } from 'antd';
+import type { AnyType } from '@/common/types';
+
+export const defaultTTSValue = `{
+	"doubao": {
+		"request_body": {
+			"namespace": "",
+			"req_params": {
+				"audio_params": {
+					"format": "mp3",
+					"sample_rate": 24000
+				},
+				"model": "",
+				"speaker": "zh_female_vv_uranus_bigtts",
+				"text": ""
+			},
+			"user": {
+				"uid": ""
+			}
+		},
+		"request_header": {
+			"X-Api-Access-Key": "",
+			"X-Api-App-Id": "",
+			"X-Api-Request-Id": "",
+			"X-Api-Resource-Id": "seed-tts-2.0",
+			"X-Control-Require-Usage-Tokens-Return": ""
+		},
+		"url": "https://openspeech.bytedance.com/api/v3/tts/unidirectional"
+	},
+	"mimo": {
+		"model": "mimo-v2.5-tts"
+	}
+}`;
+
+export const defaultAIDrawingValue = `{
+	"JiMeng": {
+		"enabled": true,
+		"base_url": "http://jimeng-api:9000",
+		"model": "jimeng-4.1",
+		"sessionid": ["xxxxxx"],
+		"sample_strength": 0.5,
+		"resolution": "2k",
+		"ratio": "16:9",
+		"response_format": "url"
+	},
+	"DouBao": {
+		"enabled": true,
+		"api_key": "xxxxxxx",
+		"model": "doubao-seedream-4.0",
+		"size": "2K",
+		"response_format": "url",
+		"watermark": false
+	},
+	"GLM": {
+		"enabled": true
+	},
+	"Z-Image": {
+		"enabled": true,
+		"base_url": "https://api-inference.modelscope.cn/",
+		"api_key": "xxxxxxx",
+		"model": "Z-Image-Turbo"
+	},
+	"OpenAI": {
+		"enabled": true,
+		"base_url": "https://new-api.houhoukang.com",
+		"api_key": "",
+		"model": "gpt-image-2",
+		"n": 1,
+		"size": "auto",
+		"quality": "auto",
+		"background": "auto",
+		"output_format": "png"
+	}
+}`;
+
+export const defaultAIPodcastValue = `{
+	"DouBao": {
+		"app_id": "xxxxxxx",
+		"access_key": "xxxxxxx",
+		"resource_id": "volc.service_type.10050"
+	}
+}`;
+
+export const onTTSEnabledChange = (form: FormInstance<AnyType>, checked: boolean) => {
+	if (checked) {
+		if (!form.getFieldValue('tts_settings')) {
+			form.setFieldsValue({
+				tts_settings: defaultTTSValue as unknown as object,
+			});
+		}
+	}
+};
+
+export const ObjectToString = <
+	T extends {
+		image_ai_settings?: object;
+		tts_settings?: object;
+		podcast_config?: object;
+		wxhb_notify_member_list?: string;
+	},
+>(
+	data: T,
+) => {
+	if (data.image_ai_settings && typeof data.image_ai_settings === 'object') {
+		data.image_ai_settings = JSON.stringify(data.image_ai_settings, null, 2) as unknown as object;
+	}
+	if (data.tts_settings && typeof data.tts_settings === 'object') {
+		data.tts_settings = JSON.stringify(data.tts_settings, null, 2) as unknown as object;
+	}
+	if (data.podcast_config && typeof data.podcast_config === 'object') {
+		data.podcast_config = JSON.stringify(data.podcast_config, null, 2) as unknown as object;
+	}
+	if (data.wxhb_notify_member_list && typeof data.wxhb_notify_member_list === 'string') {
+		data.wxhb_notify_member_list = data.wxhb_notify_member_list.split(',') as unknown as string;
+	} else {
+		data.wxhb_notify_member_list = [] as unknown as string;
+	}
+};
+
+export const chatBaseURLTips = (
+	<>
+		示例:{' '}
+		<a
+			href="https://new-api.houhoukang.com/"
+			target="_blank"
+			rel="noreferrer"
+		>
+			https://new-api.houhoukang.com/
+		</a>
+		，或者 https://new-api.houhoukang.com/v1 或者
+		https://new-api.houhoukang.com/v2，如果不是以版本号结尾，会自动补全一个/v1
+	</>
+);
+
+export const imageRecognitionModelTips = (
+	<>
+		<p>图像识别模型是用来识别用户上传的图片内容的。</p>
+		<p>解决某些大模型文字输出效果很好，但是不支持图像识别的问题</p>
+	</>
+);

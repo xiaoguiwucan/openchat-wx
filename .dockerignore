@@ -2,6 +2,8 @@
 .vscode
 .github
 .deploy
+admin-frontend/node_modules
+admin-frontend/dist
 wechat-robot-client
 *.log
 *.md

@@ -1,0 +1,9 @@
+dist
+.git
+.vscode
+.github
+node_modules
+.pnpm-store
+coverage
+*.log
+.DS_Store

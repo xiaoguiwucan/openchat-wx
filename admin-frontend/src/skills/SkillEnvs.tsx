@@ -1,0 +1,112 @@
+import { useRequest } from 'ahooks';
+import { Alert, App, Form, Modal } from 'antd';
+import React, { useEffect } from 'react';
+import type { DtoEnvVar as EnvVar, DtoSkill as Skill } from '@/api/wechat-robot/wechat-robot';
+import EnvEditor from './EnvEditor';
+
+interface IProps {
+	open?: boolean;
+	robotId: number;
+	skill: Skill;
+	onRefresh: () => void;
+	onClose: () => void;
+}
+
+interface IFormValues {
+	name: string;
+	env_vars: EnvVar[];
+}
+
+const SkillEnvs = (props: IProps) => {
+	const { message } = App.useApp();
+
+	const [form] = Form.useForm<IFormValues>();
+
+	useEffect(() => {
+		if (props.open) {
+			const envs = props.skill.env_vars || [];
+			try {
+				form.setFieldsValue({
+					env_vars: JSON.stringify(envs || [], null, 2) as unknown as EnvVar[],
+				});
+			} catch {
+				//
+			}
+		}
+	}, []);
+
+	const { runAsync, loading } = useRequest(
+		async (values: IFormValues) => {
+			const resp = await window.wechatRobotClient.skills.envsCreate(
+				{
+					id: props.robotId,
+				},
+				{
+					name: props.skill.metadata?.name || '',
+					env_vars: values.env_vars,
+				},
+			);
+			return resp.data?.data;
+		},
+		{
+			manual: true,
+			onSuccess: () => {
+				message.success('保存成功');
+				props.onRefresh();
+				props.onClose();
+			},
+			onError: reason => {
+				message.error(reason.message);
+			},
+		},
+	);
+
+	return (
+		<Modal
+			title={<>技能{props.skill.metadata?.name}环境变量</>}
+			width="min(500px, calc(100vw - 32px))"
+			open={props.open}
+			confirmLoading={loading}
+			onOk={async () => {
+				const values = await form.validateFields();
+				const envs = values.env_vars as unknown as string;
+				try {
+					if (envs?.trim()) {
+						values.env_vars = JSON.parse(envs);
+					} else {
+						values.env_vars = [];
+					}
+				} catch {
+					message.error('环境变量格式错误，请检查后重试');
+					return;
+				}
+				await runAsync(values);
+			}}
+			onCancel={props.onClose}
+		>
+			<Alert
+				style={{ marginBottom: 16 }}
+				description={
+					<>
+						<p style={{ fontSize: 12, margin: 0 }}>
+							<b>技能环境变量</b>用来给脚本注入一些私密信息，比如调用外部接口的密钥。
+						</p>
+					</>
+				}
+				type="info"
+				closable
+				showIcon
+			/>
+			<Form
+				form={form}
+				autoComplete="off"
+			>
+				<Form.Item name="env_vars">
+					<EnvEditor />
+				</Form.Item>
+			</Form>
+		</Modal>
+	);
+};
+
+export default React.memo(SkillEnvs);

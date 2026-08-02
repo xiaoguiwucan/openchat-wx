@@ -1,0 +1,551 @@
+import { useRequest } from 'ahooks';
+import {
+	Alert,
+	App,
+	AutoComplete,
+	Avatar,
+	Button,
+	Col,
+	Drawer,
+	Form,
+	Input,
+	InputNumber,
+	Row,
+	Select,
+	Space,
+	Spin,
+	Switch,
+} from 'antd';
+import React from 'react';
+import type * as Api from '@/api/wechat-robot/wechat-robot';
+import { DtoContactType } from '@/api/wechat-robot/wechat-robot';
+import ParamsGroup from '@/components/ParamsGroup';
+import SystemPromptEditor from '@/components/SystemPromptEditor';
+import { DefaultAvatar } from '@/constant';
+import { AiModels } from '@/constant/ai';
+import AIDrawingSettingsEditor from './AIDrawingSettingsEditor';
+import TTSettingsEditor from './TTSettingsEditor';
+import { imageRecognitionModelTips, ObjectToString, onTTSEnabledChange } from './utils';
+
+interface IProps {
+	robotId: number;
+	contact: NonNullable<NonNullable<Api.Contact.ListList.ResponseBody['data']>['items']>[number];
+	open: boolean;
+	onClose: () => void;
+}
+
+type IFormValue = Api.FriendSettings.FriendSettingsCreate.RequestBody;
+
+const FriendSettings = (props: IProps) => {
+	const { message } = App.useApp();
+
+	const { contact } = props;
+
+	const [form] = Form.useForm<IFormValue>();
+
+	// 加载全局配置
+	const { data: globalSettings, loading: globalLoading } = useRequest(
+		async () => {
+			const resp = await window.wechatRobotClient.globalSettings.globalSettingsList({ id: props.robotId });
+			return resp.data;
+		},
+		{
+			manual: false,
+			onError: reason => {
+				message.error(reason.message);
+			},
+		},
+	);
+
+	// 加载好友设置
+	const { data, loading } = useRequest(
+		async () => {
+			const resp = await window.wechatRobotClient.friendSettings.friendSettingsList({
+				id: props.robotId,
+				contact_id: contact.wechat_id!,
+			});
+			return resp.data;
+		},
+		{
+			manual: false,
+			onSuccess: resp => {
+				if (!resp?.data) {
+					return;
+				}
+				ObjectToString(resp.data);
+				form.setFieldsValue(resp?.data || {});
+			},
+			onError: reason => {
+				message.error(reason.message);
+			},
+		},
+	);
+
+	const { runAsync: onSave, loading: saveLoading } = useRequest(
+		async (data: Api.FriendSettings.FriendSettingsCreate.RequestBody) => {
+			const resp = await window.wechatRobotClient.friendSettings.friendSettingsCreate({ id: props.robotId }, data);
+			return resp.data;
+		},
+		{
+			manual: true,
+			onSuccess: () => {
+				message.success('保存成功');
+				props.onClose();
+			},
+			onError: reason => {
+				message.error(reason.message);
+			},
+		},
+	);
+
+	const onOk = async () => {
+		const values = await form.validateFields();
+
+		if (values.image_ai_enabled) {
+			try {
+				const json = JSON.parse(values.image_ai_settings as unknown as string);
+				if (!json || typeof json !== 'object' || Array.isArray(json)) {
+					message.error('绘图设置格式错误，不是有效的JSON对象格式');
+					return;
+				}
+				values.image_ai_settings = json;
+			} catch {
+				message.error('绘图设置格式错误，不是有效的JSON对象格式');
+				return;
+			}
+		}
+		if (values.tts_enabled) {
+			try {
+				const json = JSON.parse(values.tts_settings as unknown as string);
+				if (!json || typeof json !== 'object' || Array.isArray(json)) {
+					message.error('语音设置格式错误，不是有效的JSON对象格式');
+					return;
+				}
+				values.tts_settings = json;
+			} catch {
+				message.error('语音设置格式错误，不是有效的JSON对象格式');
+				return;
+			}
+		}
+		const configId = values.id;
+		await onSave({ ...values, wechat_id: contact.wechat_id!, config_id: configId, id: props.robotId });
+	};
+
+	const applyGlobalSettings = (type: 'chat' | 'drawing' | 'tts' | 'all') => {
+		if (!globalSettings?.data) {
+			message.error('全局配置不存在');
+			return;
+		}
+		const imageAiSettings = globalSettings.data.image_ai_settings
+			? JSON.stringify(globalSettings.data.image_ai_settings, null, 2)
+			: '{}';
+		const _ttsSettings = globalSettings.data.tts_settings
+			? JSON.stringify(globalSettings.data.tts_settings, null, 2)
+			: '{}';
+		const chatSettings: Partial<IFormValue> = {
+			chat_ai_enabled: globalSettings.data.chat_ai_enabled,
+			chat_base_url: globalSettings.data.chat_base_url,
+			chat_api_key: globalSettings.data.chat_api_key,
+			chat_model: globalSettings.data.chat_model,
+			image_recognition_model: globalSettings.data.image_recognition_model,
+			max_completion_tokens: globalSettings.data.max_completion_tokens,
+			chat_prompt: globalSettings.data.chat_prompt,
+		};
+		const drawingSettings: Partial<IFormValue> = {
+			image_ai_enabled: globalSettings.data.image_ai_enabled,
+			image_ai_settings: imageAiSettings as unknown as object,
+		};
+		const ttsSettings: Partial<IFormValue> = {
+			tts_enabled: globalSettings.data.tts_enabled,
+			tts_model: globalSettings.data.tts_model,
+			tts_settings: _ttsSettings as unknown as object,
+		};
+		switch (type) {
+			case 'chat':
+				form.setFieldsValue(chatSettings);
+				break;
+			case 'drawing':
+				form.setFieldsValue(drawingSettings);
+				break;
+			case 'tts':
+				form.setFieldsValue(ttsSettings);
+				break;
+			case 'all':
+				form.setFieldsValue({
+					...chatSettings,
+					...drawingSettings,
+					...ttsSettings,
+				});
+				break;
+			default:
+				message.error('未知类型');
+				return;
+		}
+	};
+
+	return (
+		<Drawer
+			title={
+				<Row
+					align="middle"
+					wrap={false}
+				>
+					<Col flex="0 0 32px">
+						<Avatar src={contact.avatar || DefaultAvatar} />
+					</Col>
+					<Col
+						flex="0 1 auto"
+						className="ellipsis"
+						style={{ padding: '0 3px' }}
+					>
+						{contact.remark || contact.alias || contact.nickname || contact.wechat_id} 聊天设置
+						{data?.data?.id === 0 && (
+							<span style={{ fontSize: 12, color: '#ff5722' }}>
+								(该好友未进行过任何设置
+								{props.contact.type === DtoContactType.ContactTypeOfficialAccount ? null : '，运行时会继承全局设置'})
+							</span>
+						)}
+					</Col>
+				</Row>
+			}
+			extra={
+				<Space>
+					<Button
+						type="primary"
+						loading={globalLoading}
+						onClick={() => applyGlobalSettings('all')}
+					>
+						使用全局配置填充
+					</Button>
+				</Space>
+			}
+			open={props.open}
+			onClose={props.onClose}
+			size="min(99vw, 900px)"
+			styles={{
+				header: { paddingTop: 12, paddingBottom: 12 },
+				body: { paddingTop: 16, paddingBottom: 0 },
+				footer: { padding: 0 },
+			}}
+			footer={
+				<Row style={{ overflow: 'hidden' }}>
+					<Col
+						span={12}
+						style={{ borderRight: '1px solid #f0f0f0' }}
+					>
+						<Button
+							size="large"
+							type="text"
+							block
+							onClick={props.onClose}
+						>
+							取消
+						</Button>
+					</Col>
+					<Col span={12}>
+						<Button
+							size="large"
+							type="primary"
+							block
+							style={{ borderRadius: 0 }}
+							loading={saveLoading}
+							onClick={onOk}
+						>
+							确认
+						</Button>
+					</Col>
+				</Row>
+			}
+		>
+			<Spin spinning={loading || globalLoading}>
+				<Form
+					layout="vertical"
+					form={form}
+					labelWrap
+					autoComplete="off"
+					scrollToFirstError={{ behavior: 'instant', block: 'end', focus: true }}
+				>
+					<Form.Item
+						name="id"
+						hidden
+					>
+						<Input />
+					</Form.Item>
+					<ParamsGroup
+						title="AI聊天设置"
+						style={{ marginTop: 10 }}
+					>
+						<>
+							{!globalSettings?.data?.chat_ai_enabled && (
+								<Alert
+									style={{ marginTop: 10, marginBottom: 10 }}
+									type="warning"
+									title={<>全局设置下面的AI聊天设置未开启，当前设置将不会生效</>}
+								/>
+							)}
+						</>
+						<Form.Item
+							layout="horizontal"
+							name="chat_ai_enabled"
+							label="聊天AI"
+							valuePropName="checked"
+						>
+							<Switch
+								unCheckedChildren="关闭"
+								checkedChildren="开启"
+							/>
+						</Form.Item>
+						<Form.Item
+							noStyle
+							shouldUpdate={(prev: IFormValue, next: IFormValue) => prev.chat_ai_enabled !== next.chat_ai_enabled}
+						>
+							{({ getFieldValue }) => {
+								if (getFieldValue('chat_ai_enabled')) {
+									return (
+										<>
+											<Form.Item
+												name="chat_base_url"
+												label="API地址"
+												tooltip={
+													<>
+														示例:{' '}
+														<a
+															href="https://new-api.houhoukang.com/"
+															target="_blank"
+															rel="noreferrer"
+														>
+															https://new-api.houhoukang.com/
+														</a>
+													</>
+												}
+											>
+												<Input
+													placeholder="不填则使用全局配置"
+													allowClear
+												/>
+											</Form.Item>
+											<Form.Item
+												name="chat_api_key"
+												label="API密钥"
+												tooltip={
+													<>
+														可前往
+														<a
+															href="https://new-api.houhoukang.com/"
+															target="_blank"
+															rel="noreferrer"
+														>
+															https://new-api.houhoukang.com/
+														</a>
+														获取
+													</>
+												}
+											>
+												<Input
+													placeholder="不填则使用全局配置"
+													allowClear
+												/>
+											</Form.Item>
+											<Form.Item
+												name="chat_model"
+												label="聊天模型"
+											>
+												<AutoComplete
+													placeholder="不填则使用全局配置"
+													style={{ width: '100%' }}
+													options={AiModels}
+												/>
+											</Form.Item>
+											<Form.Item
+												name="image_recognition_model"
+												label="图像识别模型"
+												tooltip={imageRecognitionModelTips}
+											>
+												<AutoComplete
+													placeholder="不填则使用全局配置"
+													style={{ width: '100%' }}
+													options={AiModels}
+												/>
+											</Form.Item>
+											<Form.Item
+												name="max_completion_tokens"
+												label="最大回复"
+												tooltip="AI每次回复的最大词元个数，为0则表示不限制"
+											>
+												<InputNumber
+													placeholder="请输入最大回复，为0则表示不限制"
+													style={{ width: '100%' }}
+													max={4096}
+													min={0}
+												/>
+											</Form.Item>
+											<Form.Item
+												name="chat_prompt"
+												label="人设"
+												tooltip="人设是指在与AI进行对话时，系统会自动添加的提示信息，用于引导AI的回答方向和风格。"
+											>
+												<SystemPromptEditor robotId={props.robotId} />
+											</Form.Item>
+										</>
+									);
+								}
+								return null;
+							}}
+						</Form.Item>
+						<Form.Item style={{ marginBottom: 6 }}>
+							<div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+								<Button
+									disabled={globalLoading}
+									onClick={() => applyGlobalSettings('chat')}
+								>
+									使用全局配置填充AI聊天设置
+								</Button>
+							</div>
+						</Form.Item>
+					</ParamsGroup>
+					<ParamsGroup
+						title="AI绘图设置"
+						style={{ marginTop: 24 }}
+					>
+						<>
+							{!globalSettings?.data?.image_ai_enabled && (
+								<Alert
+									style={{ marginTop: 10, marginBottom: 10 }}
+									type="warning"
+									title={<>全局设置下面的AI绘图设置未开启，当前设置将不会生效</>}
+								/>
+							)}
+						</>
+						<Form.Item
+							layout="horizontal"
+							name="image_ai_enabled"
+							label="绘图AI"
+							valuePropName="checked"
+						>
+							<Switch
+								unCheckedChildren="关闭"
+								checkedChildren="开启"
+							/>
+						</Form.Item>
+						<Form.Item
+							noStyle
+							shouldUpdate={(prev: IFormValue, next: IFormValue) => prev.image_ai_enabled !== next.image_ai_enabled}
+						>
+							{({ getFieldValue }) => {
+								if (getFieldValue('image_ai_enabled')) {
+									return (
+										<>
+											<Form.Item
+												name="image_ai_settings"
+												label="绘图设置"
+											>
+												<AIDrawingSettingsEditor />
+											</Form.Item>
+										</>
+									);
+								}
+								return null;
+							}}
+						</Form.Item>
+						<Form.Item style={{ marginBottom: 6 }}>
+							<div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+								<Button
+									disabled={globalLoading}
+									onClick={() => applyGlobalSettings('drawing')}
+								>
+									使用全局配置填充AI绘图设置
+								</Button>
+							</div>
+						</Form.Item>
+					</ParamsGroup>
+					<ParamsGroup
+						title="AI文本转语音设置"
+						style={{ marginTop: 24 }}
+					>
+						<>
+							{!globalSettings?.data?.tts_enabled && (
+								<Alert
+									style={{ marginTop: 10, marginBottom: 10 }}
+									type="warning"
+									title={<>全局设置下面的AI文本转语音设置未开启，当前设置将不会生效</>}
+								/>
+							)}
+						</>
+						<Form.Item
+							layout="horizontal"
+							name="tts_enabled"
+							label="文本转语音"
+							valuePropName="checked"
+						>
+							<Switch
+								unCheckedChildren="关闭"
+								checkedChildren="开启"
+								onChange={(checked: boolean) => {
+									onTTSEnabledChange(form, checked);
+								}}
+							/>
+						</Form.Item>
+						<Form.Item
+							noStyle
+							shouldUpdate={(prev: IFormValue, next: IFormValue) => prev.tts_enabled !== next.tts_enabled}
+						>
+							{({ getFieldValue }) => {
+								if (getFieldValue('tts_enabled')) {
+									return (
+										<>
+											<Form.Item
+												name="tts_model"
+												label="语音模型"
+												rules={[{ required: true, message: '语音模型不能为空' }]}
+											>
+												<Select
+													placeholder="请选择语音模型"
+													style={{ width: '100%' }}
+													options={[
+														{ label: '豆包', value: 'doubao' },
+														{ label: '小米', value: 'mimo' },
+													]}
+												/>
+											</Form.Item>
+											<Form.Item
+												name="tts_settings"
+												label="语音设置"
+												rules={[{ required: true, message: '语音设置不能为空' }]}
+												tooltip={
+													<>
+														<a
+															target="_blank"
+															rel="noreferrer"
+															href="https://www.volcengine.com/docs/6561/1598757?lang=zh"
+														>
+															语音设置文档
+														</a>
+													</>
+												}
+											>
+												<TTSettingsEditor />
+											</Form.Item>
+										</>
+									);
+								}
+								return null;
+							}}
+						</Form.Item>
+						<Form.Item style={{ marginBottom: 6 }}>
+							<div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+								<Button
+									disabled={globalLoading}
+									onClick={() => applyGlobalSettings('tts')}
+								>
+									使用全局配置填充AI文本转语音设置
+								</Button>
+							</div>
+						</Form.Item>
+					</ParamsGroup>
+				</Form>
+			</Spin>
+		</Drawer>
+	);
+};
+
+export default React.memo(FriendSettings);

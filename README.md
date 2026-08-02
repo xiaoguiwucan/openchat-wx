@@ -37,6 +37,8 @@ openchat-wx/
 ├── .deploy/
 │   ├── local/                # macOS / Windows / 本机 Docker 推荐配置
 │   └── server/               # Linux 服务器部署模板
+├── admin-frontend/           # 项目内置管理后台前端（React + Ant Design）
+├── cmd/admin-proxy/          # 带管理后台登录校验的客户端 API 代理
 ├── common_cron/              # 定时任务
 ├── controller/               # HTTP API 控制器
 ├── model/                    # 数据模型
@@ -46,6 +48,7 @@ openchat-wx/
 ├── service/                  # 业务服务
 ├── startup/                  # 启动、迁移、种子和依赖初始化
 ├── Dockerfile                # 多阶段生产镜像
+├── Dockerfile.admin-proxy    # 管理后台安全代理镜像
 ├── go.mod
 └── main.go
 ```
@@ -144,7 +147,7 @@ Windows PowerShell：
 
 ```bash
 docker compose config --quiet
-docker compose pull
+docker compose pull --ignore-buildable
 
 # 管理后台会按这个兼容标签创建客户端。务必在 pull 之后构建并覆盖该标签。
 docker build \
@@ -223,15 +226,25 @@ Model:    中转站实际支持的模型名
 
 ### 多模型渠道
 
-增强版内置独立的模型渠道管理页，登录管理后台后直接打开：
+登录管理后台后，按以下路径进入内置模型渠道页面：
+
+```text
+机器人卡片 → 机器人详情 → 全局设置 → 模型渠道
+```
+
+该页面是项目内置 React 管理后台的一部分，不再需要打开孤立页面。浏览器请求会通过同源
+`/api/v1/openchat/<机器人编码>/...` 路径进入 `openchat-admin-proxy`；代理先验证管理后台
+登录态，再按机器人编码转发到对应的动态客户端容器，因此同时支持多个机器人且不会把
+客户端配置接口匿名暴露。
+
+旧地址仍作为本机故障排查入口保留：
 
 ```text
 http://127.0.0.1:9001/api/v1/robot/ai-providers/ui
 ```
 
-`9001` 仅绑定宿主机回环地址，不对局域网或公网开放。当前官方管理后端镜像只转发它已知的
-固定接口，因此增强版渠道页由客户端本机端口提供。使用仓库脚本重部署客户端即可保留原
-环境、技能挂载和回滚容器，同时建立该端口：
+`9001` 只绑定宿主机回环地址，不对局域网或公网开放。日常配置应使用正式管理后台。
+使用仓库脚本重部署已有客户端，可保留原环境、技能挂载和回滚容器，同时建立该回退端口：
 
 ```bash
 cd .deploy/local
@@ -239,7 +252,8 @@ cd .deploy/local
 ```
 
 一个渠道同时保存 Base URL、API Key、对话模型、识图模型、绘图模型和群总结模型。
-可以创建任意数量的 OpenAI 兼容渠道，并把所选渠道应用到以下范围：
+在“全局设置”中可以新增、编辑、停用、删除、测试和切换任意数量的 OpenAI 兼容渠道。
+各能力模型可以来自同一中转站的不同模型。底层 API 还支持把所选渠道应用到以下范围：
 
 - `全局默认`：未单独选择渠道的会话使用该渠道；
 - `指定群聊`：输入 `ROOM_ID@chatroom`，只切换该群；
@@ -335,8 +349,14 @@ OpenAI 兼容中转站，实际选择顺序如下：
 ### 群聊自由回复
 
 自由回复用于处理未 @ 机器人、也没有显式关键词的自然群聊消息。它不会覆盖明确触发：
-优先级固定为 `@机器人` → `群/全局触发词` → `自由回复`。可通过全局设置或群设置 API
-配置以下字段：
+优先级固定为 `@机器人` → `群/全局触发词` → `自由回复`。全局入口位于：
+
+```text
+机器人卡片 → 机器人详情 → 全局设置 → 自由回复
+```
+
+页面提供启用开关、积极/平衡/谨慎档位、同群冷却秒数和单群每日上限。群聊单独配置时会
+覆盖全局值。对应字段如下：
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
@@ -491,7 +511,7 @@ docker image inspect openchat-wx:local >/dev/null
 git pull --ff-only
 cd .deploy/local
 docker compose config --quiet
-docker compose pull
+docker compose pull --ignore-buildable
 
 docker build \
   --build-arg VERSION="$(git -C ../.. describe --tags --always --dirty)" \
@@ -627,6 +647,8 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.25.8 \
   go test ./service ./pkg/mcp ./utils -count=1
 
 docker build -t openchat-wx:test .
+docker compose -f .deploy/local/docker-compose.yml build \
+  wechat-robot-admin-frontend openchat-admin-proxy
 
 docker compose -f .deploy/local/docker-compose.yml \
   --env-file .deploy/local/.env.example config --quiet
@@ -644,6 +666,8 @@ git clone https://github.com/xiaoguiwucan/openchat-wx.git "$tmp_dir/openchat-wx"
 cd "$tmp_dir/openchat-wx"
 
 docker build -t openchat-wx:fresh-clone .
+docker compose -f .deploy/local/docker-compose.yml build \
+  wechat-robot-admin-frontend openchat-admin-proxy
 docker tag openchat-wx:fresh-clone \
   registry.cn-shenzhen.aliyuncs.com/houhou/wechat-robot-client:latest
 docker compose -f .deploy/local/docker-compose.yml \
@@ -658,6 +682,7 @@ docker compose -f .deploy/local/docker-compose.yml \
 - 能力设计参考：[`yideng966/LightAgent`](https://github.com/yideng966/LightAgent)
 
 本仓库保留上游 MIT License 和版权信息。任何引用项目的名称、商标和服务均归其各自所有者所有。
+`admin-frontend/` 基于上游管理前端并保留其 ISC License 文件。
 
 ## License
 

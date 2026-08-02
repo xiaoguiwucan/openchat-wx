@@ -1,0 +1,37 @@
+{
+	"ts-node": {
+		"compilerOptions": {
+			"target": "ES2022",
+			"module": "commonjs"
+		}
+	},
+	"compilerOptions": {
+		"verbatimModuleSyntax": true,
+		"sourceMap": true,
+		"allowJs": true,
+		"strict": true,
+		"forceConsistentCasingInFileNames": true,
+		"noImplicitReturns": true,
+		"noImplicitThis": true,
+		"importHelpers": true,
+		"allowSyntheticDefaultImports": true,
+		"skipLibCheck": true,
+		"isolatedModules": true,
+		"noEmitOnError": true,
+		"noUnusedLocals": true,
+		"noUnusedParameters": false,
+		"outDir": "dist",
+		"module": "esnext",
+		"target": "esnext",
+		"lib": ["dom", "ES2022"],
+		"jsx": "react-jsx",
+		"moduleResolution": "bundler",
+		"types": ["node"],
+		"paths": {
+			"@/*": ["./src/*"]
+		},
+		"typeRoots": ["node_modules/@types", "src/@types"]
+	},
+	"include": ["./src/**/*.ts", "./src/**/*.tsx", "./rsbuild.config.ts"],
+	"exclude": ["node_modules"]
+}
